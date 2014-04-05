@@ -1,0 +1,26 @@
+Name:		mfsolve
+Version: 	0.1.0
+Synopsis:	Iteratively solving linear equations (à la metafont)
+Category: 	Math
+Copyright: 	Kristof Bastiaensen (2013)
+Stability:	Unstable
+License:	BSD3
+License-file:	LICENSE
+Author:		Kristof Bastiaensen
+Maintainer:	Kristof Bastiaensen
+Bug-Reports: 	https://github.com/kuribas/cubicbezier/issues
+Build-type:	Simple
+Cabal-version:	>=1.6
+Description:  This module solve linear equations in an iterative way, like in metafont.
+  .
+  This allows variables to be used in nonlinear expressions, as long as the value of the variable has been already reduced to a number.  A numeric instance is provided so that the regular haskell functions can be used on expressions involving variables.
+ 
+source-repository head
+  type:		git
+  location:	https://github.com/kuribas/mfsolve
+
+Library
+  Ghc-options: -Wall
+  Build-depends: base >= 3 && < 5, unordered-containers > 0.2, hashable >= 0.1.2
+  Exposed-Modules:
+    Math.MFSolve
