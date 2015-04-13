@@ -141,7 +141,7 @@ instance (Show v, Ord n, Show n, Num n, Eq n) => Show (SimpleExpr v n) where
   show (SEBin Mul e1 (SEUn Recip e2)) =
     withParens e1 [Add] ++ "/" ++ withParens e2 [Add, Mul]
   show (SEBin Mul e1 e2) =
-    withParens e1 [Add] ++ space ++ withParens e2 [Add]
+    withParens e1 [Add] ++ "*" ++ withParens e2 [Add]
     where space = case e1 of
                    Const _ -> ""
                    _ -> " "
