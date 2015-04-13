@@ -27,7 +27,6 @@ import Data.Maybe
 import Data.List
 import Data.Function(on)
 import Control.Monad
-import Debug.Trace
 
 infixr 1 === , =&=
 
@@ -142,9 +141,6 @@ instance (Show v, Ord n, Show n, Num n, Eq n) => Show (SimpleExpr v n) where
     withParens e1 [Add] ++ "/" ++ withParens e2 [Add, Mul]
   show (SEBin Mul e1 e2) =
     withParens e1 [Add] ++ "*" ++ withParens e2 [Add]
-    where space = case e1 of
-                   Const _ -> ""
-                   _ -> " "
   show (SEUn Exp (SEBin Mul (SEUn Log e1) e2)) =
     withParens e1 [Add, Mul] ++ "**" ++ withParens e2 [Add, Mul]
   show (SEUn op e) = show op ++ "(" ++ show e ++ ")"
