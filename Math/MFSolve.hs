@@ -119,7 +119,7 @@ newtype SimpleVar = SimpleVar String
 data Expr v n = Expr (LinExpr v n) [TrigTerm v n] [NonLinExpr v n]
                 deriving Generic
 
--- A linear expression of several variables.
+-- | A linear expression of several variables.
 -- For example: @2*a + 3*b + 2@ would be represented as
 -- @LinExpr 2 [(a, 2), (b, 3)]@.
 data LinExpr v n = LinExpr n [(v, n)]
