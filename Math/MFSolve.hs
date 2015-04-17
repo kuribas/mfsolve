@@ -11,16 +11,16 @@ Portability : portable
 
 This module implements an equation solver that solves and evaluates
 expressions on the fly.  It is based on Prof. D.E.Knuth's
-metafont.  The goal of mfsolve is to make the solver useful in an
+/metafont/.  The goal of mfsolve is to make the solver useful in an
 interactive program, by enhancing the bidirectionality of the solver.
 Like metafont, it can solve linear equations, and evaluate nonlinear
 expressions.  In addition to metafont, it also solves for angles, and
 makes the solution independend of the order of the equations.
 
-The `Expr` type allows for calculations with constants and unknown
-variables.
+The `Expr` datatype allows for calculations with constants and unknown
+variables.  The `Dependencies` datatype contains all dependencies and known equations.
 
-Examples:
+=== Examples:
 
 Let's define some variables.  The `SimpleVar` type is a simple wrapper
 around `String` to provide nice output.
