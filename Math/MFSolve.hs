@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveGeneric, PatternGuards, ViewPatterns #-}
+{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms #-}
 
 {-|
 Module      : Math.MFSolve
@@ -149,6 +149,10 @@ type TrigEq v n = (Period v n, Amplitude v n, Phase n, n)
 type TrigEq2 v n = M.HashMap (Period v n)
                    (M.HashMap v (Expr v n))
 
+pattern LinearE l = Expr l [] []
+pattern ConstE c = Expr (LinExpr c []) [] []
+pattern LConst c = LinExpr c []
+
 instance (Hashable v, Hashable n) => Hashable (LinExpr v n)
 instance (Hashable v, Hashable n) => Hashable (NonLinExpr v n)
 instance (Hashable n) => Hashable (UnaryFun n) where
@@ -236,21 +240,21 @@ instance Show UnaryOp where
 instance (Floating n, Ord n, Ord v) => Num (Expr v n) where
   (+) = addExpr
   (*) = mulExpr
-  negate = mulExpr (makeConstant (-1))
+  negate = mulExpr (ConstE (-1))
   abs = unExpr (UnaryFun Abs abs)
   signum = unExpr (UnaryFun Signum signum)
-  fromInteger = makeConstant . fromInteger
+  fromInteger = ConstE . fromInteger
 
 instance (Floating n, Ord n, Ord v) => Fractional (Expr v n) where
   recip = unExpr (UnaryFun Recip (1.0/))
-  fromRational = makeConstant . fromRational
+  fromRational = ConstE . fromRational
 
 instance (Floating n, Ord n, Ord v) => Floating (Expr v n) where
-  pi = makeConstant pi
+  pi = ConstE pi
   exp = unExpr (UnaryFun Exp exp)
   log = unExpr (UnaryFun Log log)
   sin = sinExpr
-  cos a = sinExpr (a + makeConstant (pi/2))
+  cos a = sinExpr (a + ConstE (pi/2))
   cosh = unExpr (UnaryFun Cosh cosh)
   atanh = unExpr (UnaryFun Atanh atanh)
   tan = unExpr (UnaryFun Tan tan)
@@ -265,7 +269,7 @@ instance (Show n, Floating n, Ord n, Ord v, Show v) =>Show (Dependencies v n) wh
   show dep@(Dependencies _ lin _ _ _) = 
     unlines (map showLin (M.toList lin) ++
              map showNl (nonlinearEqs dep))
-    where showLin (v, e) = show v ++ " = " ++ show (linExpr e)
+    where showLin (v, e) = show v ++ " = " ++ show (LinearE e)
           showNl e = show e ++ " = 0"
 
 instance (Show n) => Show (DepError n) where
@@ -321,16 +325,13 @@ simpleExpr (Expr lin trig nonlin) =
 zeroTerm :: (Num n) => LinExpr v n
 zeroTerm = LinExpr 0 []
 
-linExpr :: LinExpr v n -> Expr v n
-linExpr lt = Expr lt [] []
-
 -- | Create an expression from a constant
 makeConstant :: n -> Expr v n
-makeConstant c = linExpr (LinExpr c [])
+makeConstant = ConstE
 
 -- | Create an expression from a variable
 makeVariable :: Num n => v -> Expr v n
-makeVariable v = linExpr (LinExpr 0 [(v, 1)])
+makeVariable v = LinearE $ LinExpr 0 [(v, 1)]
 
 trigExpr :: (Num n) => [TrigTerm v n] -> Expr v n
 trigExpr t = Expr zeroTerm t []
@@ -338,16 +339,9 @@ trigExpr t = Expr zeroTerm t []
 nonlinExpr :: Num n => [NonLinExpr v n] -> Expr v n
 nonlinExpr = Expr zeroTerm []
 
-getConst :: LinExpr t a -> Maybe a
-getConst (LinExpr a []) = Just a
-getConst _ = Nothing
-
-getLin :: Expr t n -> Maybe (LinExpr t n)
-getLin (Expr lt [] []) = Just lt
-getLin _ = Nothing
-
-getConstExpr :: Expr t b -> Maybe b
-getConstExpr e = getLin e >>= getConst
+isConst :: LinExpr v n -> Bool
+isConst (LinExpr _ []) = True
+isConst _ = False
 
 addLin :: (Ord v, Num n, Eq n) => LinExpr v n -> LinExpr v n -> LinExpr v n
 addLin (LinExpr c1 terms1) (LinExpr c2 terms2) =
@@ -442,25 +436,25 @@ mulLinTrig lt (theta, terms) =
     -- linear amplitude
     mul1 t =
       nonlinExpr [MulExp (trigExpr [(theta, [t])])
-                      (Expr lt [] [])]
+                  (Expr lt [] [])]
 
 -- constant * (linear + trig)
 mulExpr :: (Ord a, Ord t, Floating a) => Expr t a -> Expr t a -> Expr t a
-mulExpr (getConstExpr -> Just c) (Expr lt2 trig []) =
+mulExpr (ConstE c) (Expr lt2 trig []) =
   Expr (mulLinExpr c lt2)
   (map (mulConstTrig c) trig) []
 
-mulExpr (Expr lt2 trig []) (getConstExpr -> Just c) =
+mulExpr (Expr lt2 trig []) (ConstE c) =
   Expr (mulLinExpr c lt2)
   (map (mulConstTrig c) trig) []
 
 -- linear * (constant + trig)
-mulExpr (getLin -> Just lt) (Expr (getConst -> Just c) trig []) =
-  linExpr (mulLinExpr c lt) +
+mulExpr (LinearE lt) (Expr (LConst c) trig []) =
+  LinearE (mulLinExpr c lt) +
   foldr ((+).mulLinTrig lt) 0 trig
 
-mulExpr (Expr (getConst -> Just c) trig []) (getLin -> Just lt) =
-  linExpr (mulLinExpr c lt) +
+mulExpr (Expr (LConst c) trig []) (LinearE lt) =
+  LinearE (mulLinExpr c lt) +
   foldr ((+).mulLinTrig lt) 0 trig
 
 -- anything else
@@ -468,13 +462,12 @@ mulExpr e1 e2 = nonlinExpr [MulExp e1 e2]
       
 sinExpr :: Floating n => Expr v n -> Expr v n
 sinExpr (Expr (LinExpr c t) [] [])
-  | null t = makeConstant (sin c)
+  | null t = ConstE (sin c)
   | otherwise = trigExpr [(t, [(c, LinExpr 1 [])])]
 sinExpr e = nonlinExpr [SinExp e]
 
 unExpr :: Num n => UnaryFun n -> Expr v n -> Expr v n
-unExpr (UnaryFun _ f) e
-  | Just c <- getConstExpr e = makeConstant (f c)
+unExpr (UnaryFun _ f) (ConstE c) = ConstE (f c)
 unExpr f e = nonlinExpr [UnaryApp f e]
 
 substVarLin :: (Ord v, Num n, Eq n) => (v -> Maybe (LinExpr v n)) -> LinExpr v n -> LinExpr v n
@@ -493,14 +486,14 @@ substVarNonLin s (SinExp e1) =
 
 substVarTrig :: (Ord v, Ord n, Floating n) => (v -> Maybe (LinExpr v n)) -> ([(v, n)], [(n, LinExpr v n)]) -> Expr v n
 substVarTrig s (period, terms) =
-  let period2 = linExpr $ substVarLin s (LinExpr 0 period)
-      terms2 = map (fmap $ linExpr.substVarLin s) terms
-  in foldr (\(p,a) -> (+ (a * sin (makeConstant p + period2))))
+  let period2 = LinearE $ substVarLin s (LinExpr 0 period)
+      terms2 = map (fmap $ LinearE . substVarLin s) terms
+  in foldr (\(p,a) -> (+ (a * sin (ConstE p + period2))))
      0 terms2
 
 subst :: (Ord n, Ord v, Floating n) => (v -> Maybe (LinExpr v n)) -> Expr v n -> Expr v n
 subst s (Expr lt trig nl) =
-  linExpr (substVarLin s lt) +
+  LinearE (substVarLin s lt) +
   foldr ((+).substVarTrig s) 0 trig +
   foldr ((+).substVarNonLin s) 0 nl
 
@@ -559,7 +552,7 @@ select (x:xs) =
   
 addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Either (DepError n) (Dependencies v n)
 -- adding a constant equation
-addEq0 _  (getConstExpr -> Just c) =
+addEq0 _  (ConstE c) =
   if c == 0 then Left RedundantEq
   else Left (InconsistentEq c)
 
@@ -588,8 +581,8 @@ addEq0 (Dependencies vdep lin trig trig2 nonlin) (Expr lt [] []) =
       -- substitute and evaluate trigonometric equations
       trigSubst (p, a, ph, c) =
         subst (simpleSubst v lt2) $
-        sin (linExpr $ LinExpr ph p) *
-        linExpr a + makeConstant c
+        sin (LinearE $ LinExpr ph p) *
+        LinearE a + ConstE c
       newTrig = map trigSubst trig
       trigSubst2 (v2, ex) =
         subst (simpleSubst v lt2) $
@@ -603,10 +596,10 @@ addEq0 (Dependencies vdep lin trig trig2 nonlin) (Expr lt [] []) =
 
 -- adding a sine equation
 addEq0 deps@(Dependencies vdep lin trig trig2 nl)
-  (Expr (LinExpr c lt) [(theta, [(alpha, getConst -> Just n)])] []) =
+  (Expr (LinExpr c lt) [(theta, [(alpha, LConst n)])] []) =
   if null lt then
     -- reduce a sine to linear equation
-    addEq0 deps (linExpr $ LinExpr (alpha - asin (-c/n)) theta)
+    addEq0 deps (LinearE $ LinExpr (alpha - asin (-c/n)) theta)
   else
     -- add a variable dependency on the sine equation
     case M.lookup theta trig2 of
@@ -614,18 +607,18 @@ addEq0 deps@(Dependencies vdep lin trig trig2 nl)
      Nothing -> addSin (LinExpr c lt) alpha n
      Just map2 ->
        case foldr ((+).doSubst)
-            (makeConstant c +
-             makeConstant n *
-             sin (linExpr $ LinExpr alpha theta))
+            (ConstE c +
+             ConstE n *
+             sin (LinearE $ LinExpr alpha theta))
             lt of
-        Expr lt2 [(_, [(alpha2, getConst -> Just n2)])] []
-          | isNothing(getConst lt2)
+        Expr lt2 [(_, [(alpha2, LConst n2)])] []
+          | not $ isConst lt2
           -> addSin lt2 alpha2 n2
         e2 -> addEq0 deps e2
        where
          doSubst (v,c2) = case M.lookup v map2 of
-           Nothing -> makeVariable v * makeConstant c2
-           Just e2 -> e2 * makeConstant c2
+           Nothing -> makeVariable v * ConstE c2
+           Just e2 -> e2 * ConstE c2
   where
     addSin l' a' n' =
       let (v, c', r) = splitMax l'
@@ -636,12 +629,13 @@ addEq0 deps@(Dependencies vdep lin trig trig2 nl)
       in Right $ Dependencies  vdep lin trig trig2' nl
 
 --  adding the first sine equation
-addEq0 (Dependencies d lin [] trig2 nl) (Expr (getConst -> Just c) [(theta, [(alpha, n)])] []) =
+addEq0 (Dependencies d lin [] trig2 nl)
+  (Expr (LConst c) [(theta, [(alpha, n)])] []) =
   Right $ Dependencies d lin [(theta, n, alpha, c)] trig2 nl
 
 -- try reducing this equation with another sine equation
 addEq0 (Dependencies deps lin trig trig2 nl)
-  (Expr (getConst -> Just x) [(theta, [(a, n)])] []) =
+  (Expr (LConst x) [(theta, [(a, n)])] []) =
   case mapMaybe similarTrig $ select trig of
    -- no matching equation found
    [] -> Right $ Dependencies deps lin ((theta, n, a, x):trig) trig2 nl
@@ -657,8 +651,8 @@ addEq0 (Dependencies deps lin trig trig2 nl)
        theta2 = atan (-y*d/e)-b +
                 (if (d*e) < 0 then pi else 0)
        n2     = sqrt(y*y + e*e/(d*d))
-       lin1   = linExpr $ LinExpr (-theta2) theta
-       lin2   = linExpr n - makeConstant n2
+       lin1   = LinearE $ LinExpr (-theta2) theta
+       lin2   = LinearE n - ConstE n2
   where
     similarTrig ((t,m,b,y),rest)
       | Just r <- termIsMultiple m n,
@@ -728,8 +722,8 @@ getKnown (Dependencies _ lin _ _ _) var =
 
 trigToExpr :: (Ord n, Ord v, Floating n) => TrigEq v n -> Expr v n
 trigToExpr (p, a, ph, c) =
-  linExpr a * sin(linExpr $ LinExpr ph p) +
-  makeConstant c
+  LinearE a * sin(LinearE $ LinExpr ph p) +
+  ConstE c
 
 -- | Give all nonlinear equations as an `Expr` equal to 0.
 nonlinearEqs :: (Ord n, Ord v, Floating n) => Dependencies v n -> [Expr v n]
