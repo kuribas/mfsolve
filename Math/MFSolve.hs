@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms #-}
+{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms, MultiParamTypeClasses, FlexibleContexts #-}
 
 {-|
 Module      : Math.MFSolve
@@ -7,7 +7,7 @@ Copyright   : (c) Kristof Bastiaensen, 2015
 License     : BSD-3
 Maintainer  : kristof@resonata.be
 Stability   : unstable
-Portability : portable
+Portability : ghc
 
 This module implements an equation solver that solves and evaluates
 expressions on the fly.  It is based on Prof. D.E.Knuth's
@@ -29,24 +29,23 @@ around `String` to provide nice output.
 
 Solve linear equations:
 
-> showVars $ solveEqs emptyDeps
-> [ 2*x + y === 5,
->   x - y   === 1]
+> showVars $ flip execSolver noDeps $ do
+>   2*x + y === 5
+>   x - y   === 1
 
 > x = 2.0
 > y = 1.0
 
 Solve for angle (pi/4):
 
-> showVars $ solveEqs emptyDeps
-> [ sin(t) === 1/sqrt(2) ]
+> showVars $ flip execSolver noDeps $ sin(t) === 1/sqrt(2)
 
 > t = 0.7853981633974484
 
 Solve for angle (pi/3) and amplitude:
 
-> showVars $ solveEqs emptyDeps
-> [ a*sin(x) === sqrt 3,
+> showVars $ flip execSolver noDeps $ do
+>   a*sin(x) === sqrt 3
 >   a*cos(x) === 1 ]
 
 > x = 1.0471975511965979
@@ -54,20 +53,20 @@ Solve for angle (pi/3) and amplitude:
 
 Allow nonlinear expression with unknown variables:
 
-> showVars $ solveEqs emptyDeps
-> [ sin(sqrt(x)) === y,
->   x === 2]
+> showVars $ flip execSolver noDeps $ do
+>   sin(sqrt(x)) === y
+>   x === 2
 
 >x = 2.0
 >y = 0.9877659459927355
 
 Find the angle and amplitude when using a rotation matrix:
 
-> showVars $ solveEqs emptyDeps
-> [ a*cos t*x - a*sin t*y === 30,
->   a*sin t*x + a*cos t*y === 40,
->   x === 10,
->   y === 10 ]
+> showVars $ flip execSolver noDeps $ do
+>   a*cos t*x - a*sin t*y === 30
+>   a*sin t*x + a*cos t*y === 40
+>   x === 10
+>   y === 10
 
 > x = 10.0
 > y = 10.0
@@ -77,25 +76,30 @@ Find the angle and amplitude when using a rotation matrix:
 -}
 
 module Math.MFSolve
-       (SimpleExpr(..), Expr, LinExpr(..), UnaryOp(..), BinaryOp(..),
+       (-- * Types
+        MFSolver, SimpleExpr(..), Expr, LinExpr(..), UnaryOp(..), BinaryOp(..),
         Dependencies, DepError(..), SimpleVar(..),
+        -- * Expressions
+        evalSimple, evalExpr, fromSimple, toSimple, makeVariable,
+        makeConstant, hasVar, 
+        -- * Dependencies
         getKnown, knownVars, varDefined, nonlinearEqs, dependendVars,
-        simpleExpr, emptyDeps, makeVariable, makeConstant,
-        (===), (=&=), solveEqs, showVars)
+        noDeps, 
+        eliminate, addEquation,
+        -- * Monadic Interface
+        dependencies, getValue, getKnownM, varDefinedM, (=&=), (===), ignore,  
+        runSolver, evalSolver, execSolver, unsafeSolve, showVars)
 where
 import qualified Data.HashMap.Strict as M
 import qualified Data.HashSet as H
 import GHC.Generics
+import Control.Monad.Except
+import Control.Monad.State
+import Control.Applicative hiding (Const)
 import Data.Hashable
 import Data.Maybe
 import Data.List
 import Data.Function(on)
-import Control.Monad
-
-infixr 1 === , =&=
-
---  | _labeled_ black box mathematical functions
-data UnaryFun n = UnaryFun UnaryOp (n -> n)
 
 data BinaryOp = Add | Mul
               deriving Eq
@@ -117,7 +121,7 @@ newtype SimpleVar = SimpleVar String
 
 -- | An mathematical expression of several variables.
 data Expr v n = Expr (LinExpr v n) [TrigTerm v n] [NonLinExpr v n]
-                deriving Generic
+                deriving (Generic)
 
 -- | A linear expression of several variables.
 -- For example: @2*a + 3*b + 2@ would be represented as
@@ -137,7 +141,7 @@ type TrigTerm v n = (Period v n, [(Phase n, Amplitude v n)])
 
 -- Any other term
 data NonLinExpr v n = 
-  UnaryApp (UnaryFun n) (Expr v n) |
+  UnaryApp UnaryOp (Expr v n) |
   MulExp (Expr v n) (Expr v n) |
   SinExp (Expr v n)
   deriving Generic
@@ -155,8 +159,6 @@ pattern LConst c = LinExpr c []
 
 instance (Hashable v, Hashable n) => Hashable (LinExpr v n)
 instance (Hashable v, Hashable n) => Hashable (NonLinExpr v n)
-instance (Hashable n) => Hashable (UnaryFun n) where
-  hashWithSalt s (UnaryFun o _) = hashWithSalt s o
 instance Hashable UnaryOp
 instance (Hashable v, Hashable n) => Hashable (Expr v n)
 instance Hashable SimpleVar
@@ -180,7 +182,11 @@ data Dependencies v n = Dependencies
                         [Expr v n]
                         
 -- | An error type for '===', '=&=' and 'solveEq':
-data DepError n =
+data DepError v n =
+  -- | 'UndefinedVar' @v@: The variable is not defined.
+  UndefinedVar v |
+  -- | 'UnknownVar' @v@: The variable is defined but dependend an other variables.
+  UnknownVar v n |
   -- | 'InconsistentEq' @a@: The equation was reduced to the
   -- impossible equation `a == 0` for nonzero a, which means the
   -- equation is inconsistent with previous equations.
@@ -190,7 +196,39 @@ data DepError n =
   RedundantEq
 
 instance (Ord n, Num n, Eq n, Show v, Show n) => Show (Expr v n) where
-  show e = show (simpleExpr e)
+  show e = show (toSimple e)
+
+-- | A monad for solving equations.  Basicly just a state and exception monad.
+newtype MFSolver v n a = MFSolver {
+  -- | Unwrap a solver monad as a function.
+  runSolver :: Dependencies v n -> Either (DepError v n) (Dependencies v n, a) }
+
+instance Monad (MFSolver v n) where
+  MFSolver s >>= f = MFSolver $ \dep ->
+    case s dep of
+     Left err -> Left err
+     Right (dep2, val) ->
+       runSolver (f val) dep2
+  return a = MFSolver $ \dep -> Right (dep, a)
+
+instance (MonadState (Dependencies v n)) (MFSolver v n) where
+  get = MFSolver $ \dep -> Right (dep, dep)
+  put dep = MFSolver $ const $ Right (dep, ())
+           
+instance (MonadError (DepError v n)) (MFSolver v n) where
+  throwError e = MFSolver $ const $ Left e
+  catchError s h = MFSolver $ \dep ->
+    case runSolver s dep of
+     Left e -> runSolver (h e) dep
+     v -> v
+
+instance Functor (MFSolver v n) where
+  fmap f s = MFSolver $ \dep ->
+    fmap f <$> runSolver s dep 
+
+instance Applicative (MFSolver v n) where
+  (<*>) = liftM2 ($)
+  pure = return
 
 withParens :: (Show t1, Show t, Ord t1, Num t1, Eq t1) => SimpleExpr t t1 -> [BinaryOp] -> String
 withParens e@(SEBin op _ _) ops
@@ -241,29 +279,29 @@ instance (Floating n, Ord n, Ord v) => Num (Expr v n) where
   (+) = addExpr
   (*) = mulExpr
   negate = mulExpr (ConstE (-1))
-  abs = unExpr (UnaryFun Abs abs)
-  signum = unExpr (UnaryFun Signum signum)
+  abs = unExpr Abs
+  signum = unExpr Signum
   fromInteger = ConstE . fromInteger
 
 instance (Floating n, Ord n, Ord v) => Fractional (Expr v n) where
-  recip = unExpr (UnaryFun Recip (1.0/))
+  recip = unExpr Recip
   fromRational = ConstE . fromRational
 
 instance (Floating n, Ord n, Ord v) => Floating (Expr v n) where
   pi = ConstE pi
-  exp = unExpr (UnaryFun Exp exp)
-  log = unExpr (UnaryFun Log log)
+  exp = unExpr Exp
+  log = unExpr Log
   sin = sinExpr
   cos a = sinExpr (a + ConstE (pi/2))
-  cosh = unExpr (UnaryFun Cosh cosh)
-  atanh = unExpr (UnaryFun Atanh atanh)
-  tan = unExpr (UnaryFun Tan tan)
-  sinh = unExpr (UnaryFun Sinh sinh)
-  asin = unExpr (UnaryFun Asin asin)
-  acos = unExpr (UnaryFun Acos acos)
-  asinh = unExpr (UnaryFun Asinh asinh)
-  acosh = unExpr (UnaryFun Acosh acosh)
-  atan = unExpr (UnaryFun Atan atan)
+  cosh = unExpr Cosh
+  atanh = unExpr Atanh
+  tan = unExpr Tan
+  sinh = unExpr Sinh
+  asin = unExpr Asin
+  acos = unExpr Acos
+  asinh = unExpr Asinh
+  acosh = unExpr Acosh
+  atan = unExpr Atan
 
 instance (Show n, Floating n, Ord n, Ord v, Show v) =>Show (Dependencies v n) where
   show dep@(Dependencies _ lin _ _ _) = 
@@ -272,26 +310,42 @@ instance (Show n, Floating n, Ord n, Ord v, Show v) =>Show (Dependencies v n) wh
     where showLin (v, e) = show v ++ " = " ++ show (LinearE e)
           showNl e = show e ++ " = 0"
 
-instance (Show n) => Show (DepError n) where
+instance (Show n, Show v) => Show (DepError v n) where
   show (InconsistentEq a) =
     "Inconsistent equations, off by " ++ show a
   show RedundantEq =
     "Redundant Equation."
-
+  show (UndefinedVar v) =
+    error ("Variable is undefined: " ++ show v)
+  show (UnknownVar v n) =
+    error ("Value of variable not known: " ++ show v ++ " = " ++ show n)
 
 addSimple :: (Num t1, Eq t1) => SimpleExpr t t1 -> SimpleExpr t t1 -> SimpleExpr t t1
 addSimple (Const 0) e = e
 addSimple e (Const 0) = e
 addSimple e1 e2 = SEBin Add e1 e2
 
-linToSimple :: (Num t1, Eq t1) => LinExpr t t1 -> SimpleExpr t t1
+seHasVar :: Eq v => v -> SimpleExpr v t -> Bool
+seHasVar v1 (Var v2) = v1 == v2
+seHasVar _ (Const _) = False
+seHasVar v (SEBin _ e1 e2) =
+  seHasVar v e1 ||
+  seHasVar v e2
+seHasVar v (SEUn _ e) = seHasVar v e
+
+-- | The expression contains the given variable.
+hasVar :: (Num t, Eq v, Eq t) => v -> Expr v t -> Bool
+hasVar v = seHasVar v . toSimple
+
+linToSimple :: (Num n, Eq n) => LinExpr v n -> SimpleExpr v n
 linToSimple (LinExpr v t) =
   Const v `addSimple`
   foldr (addSimple.mul) (Const 0) t
   where
     mul (v2, 1) = Var v2
     mul (v2, c) = SEBin Mul (Const c) (Var v2)
-    
+
+   
 trigToSimple :: (Num n, Eq n) => TrigTerm v n -> SimpleExpr v n
 trigToSimple (theta, t) =
   foldr (addSimple.makeSin) (Const 0) t
@@ -299,31 +353,66 @@ trigToSimple (theta, t) =
     makeSin (alpha, n) =
       SEBin Mul (linToSimple n)
       (SEUn Sin angle) where
-        angle | alpha == 0 =
-                linToSimple (LinExpr 0 theta)
-              | otherwise =
-                SEBin Add (linToSimple (LinExpr 0 theta))
-                (Const alpha)
+        angle = linToSimple (LinExpr alpha theta)
 
 nonlinToSimple :: (Num n, Eq n) => NonLinExpr v n -> SimpleExpr v n
-nonlinToSimple (UnaryApp (UnaryFun o _) e) =
-  SEUn o (simpleExpr e)
+nonlinToSimple (UnaryApp o e) =
+  SEUn o (toSimple e)
 nonlinToSimple (MulExp e1 e2) =
-  SEBin Mul (simpleExpr e1) (simpleExpr e2)
+  SEBin Mul (toSimple e1) (toSimple e2)
 nonlinToSimple (SinExp e) =
-  SEUn Sin (simpleExpr e)
+  SEUn Sin (toSimple e)
 
 -- | Convert an `Expr` to a `SimpleExpr`.
-simpleExpr :: (Num n, Eq n) => Expr v n -> SimpleExpr v n
-simpleExpr (Expr lin trig nonlin) =
+toSimple :: (Num n, Eq n) => Expr v n -> SimpleExpr v n
+toSimple (Expr lin trig nonlin) =
   linToSimple lin `addSimple`
   foldr (addSimple.trigToSimple)
   (Const 0) trig `addSimple`
   foldr (addSimple.nonlinToSimple)
   (Const 0) nonlin
 
+evalBin :: (Floating n) => BinaryOp -> n -> n -> n
+evalBin Add = (+)
+evalBin Mul = (*)
+
+evalUn :: (Floating n) => UnaryOp -> n -> n
+evalUn Sin = sin
+evalUn Abs = abs
+evalUn Recip = recip
+evalUn Signum = signum
+evalUn Exp = exp
+evalUn Log = log
+evalUn Cos = cos
+evalUn Cosh = cosh
+evalUn Atanh = atanh
+evalUn Tan = tan
+evalUn Sinh = sinh
+evalUn Asin = asin
+evalUn Acos = acos
+evalUn Asinh = asinh
+evalUn Acosh = acosh
+evalUn Atan = atan
+
+-- | evaluate a simple expression using the given substitution.
+evalSimple :: Floating m => (n -> m) -> (v -> m) -> SimpleExpr v n -> m
+evalSimple _ s (Var v) = s v
+evalSimple g _ (Const c) = g c
+evalSimple g s (SEBin f e1 e2) =
+  evalBin f (evalSimple g s e1) (evalSimple g s e2)
+evalSimple g s (SEUn f e) =
+  evalUn f (evalSimple g s e)
+
+-- | Make a expression from a simple expression.
+fromSimple :: (Floating n, Ord n, Ord v) => SimpleExpr v n -> Expr v n
+fromSimple = evalSimple makeConstant makeVariable
+
+-- | Evaluate the expression given a variable substitution.
+evalExpr :: (Floating n) => (v -> n) -> SimpleExpr v n -> n
+evalExpr = evalSimple id
+
 zeroTerm :: (Num n) => LinExpr v n
-zeroTerm = LinExpr 0 []
+zeroTerm = LConst 0
 
 -- | Create an expression from a constant
 makeConstant :: n -> Expr v n
@@ -340,8 +429,11 @@ nonlinExpr :: Num n => [NonLinExpr v n] -> Expr v n
 nonlinExpr = Expr zeroTerm []
 
 isConst :: LinExpr v n -> Bool
-isConst (LinExpr _ []) = True
+isConst (LConst _) = True
 isConst _ = False
+
+linVars :: LinExpr v n -> [v]
+linVars (LinExpr _ v) = map fst v
 
 addLin :: (Ord v, Num n, Eq n) => LinExpr v n -> LinExpr v n -> LinExpr v n
 addLin (LinExpr c1 terms1) (LinExpr c2 terms2) =
@@ -373,10 +465,11 @@ addTrigTerms terms terms2 =
   where
     mergeTerms (alpha, n) ((beta, m):rest) =
       case addTrigTerm alpha n beta m of
-       Just (_, LinExpr 0 []) -> rest
+       Just (_, LConst 0) -> rest
        Just (gamma, o) ->
          mergeTerms (gamma, o) rest
-       Nothing -> (beta, m) : mergeTerms (alpha, n) rest
+       Nothing ->
+         (beta, m) : mergeTerms (alpha, n) rest
     mergeTerms a [] = [a]
 
 addTrigTerm :: (Ord a, Ord t, Floating a) => a -> LinExpr t a -> a -> LinExpr t a -> Maybe (a, LinExpr t a)
@@ -466,8 +559,8 @@ sinExpr (Expr (LinExpr c t) [] [])
   | otherwise = trigExpr [(t, [(c, LinExpr 1 [])])]
 sinExpr e = nonlinExpr [SinExp e]
 
-unExpr :: Num n => UnaryFun n -> Expr v n -> Expr v n
-unExpr (UnaryFun _ f) (ConstE c) = ConstE (f c)
+unExpr :: Floating n => UnaryOp -> Expr v n -> Expr v n
+unExpr f (ConstE c) = ConstE (evalUn f c)
 unExpr f e = nonlinExpr [UnaryApp f e]
 
 substVarLin :: (Ord v, Num n, Eq n) => (v -> Maybe (LinExpr v n)) -> LinExpr v n -> LinExpr v n
@@ -498,30 +591,33 @@ subst s (Expr lt trig nl) =
   foldr ((+).substVarNonLin s) 0 nl
 
 -- | An empty set of dependencies.
-emptyDeps :: Dependencies v n
-emptyDeps = Dependencies M.empty M.empty [] M.empty []
+noDeps :: Dependencies v n
+noDeps = Dependencies M.empty M.empty [] M.empty []
 
 simpleSubst :: Eq a => a -> b -> a -> Maybe b
 simpleSubst x y z
   | x == z = Just y
   | otherwise = Nothing
 
--- | Make the expressions on both sides equal, and add the result to the Set of
--- dependencies.
-(===) :: (Hashable n, Hashable v, RealFrac (Phase n), Ord v,
-          Floating n) => Expr v n -> Expr v n
-         -> Dependencies v n
-         -> Either (DepError n) (Dependencies v n)
-(===) lhs rhs deps = addEq deps (lhs - rhs)
+trigToExpr :: (Ord n, Ord v, Floating n) => TrigEq v n -> Expr v n
+trigToExpr (p, a, ph, c) =
+  LinearE a * sin(LinearE $ LinExpr ph p) +
+  ConstE c
 
-addEqs :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> [Expr v n] -> Either (DepError n) (Dependencies v n)
-addEqs = foldM addEq
+trig2ToExpr :: (Ord v, Floating n, Ord n) => M.HashMap v (Expr v n) -> [Expr v n]
+trig2ToExpr =
+  map (\(v,e)-> makeVariable v-e)
+  . M.toList
 
-addEq :: (Hashable n, Hashable v, RealFrac (Phase n), Ord v,
+addEqs :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> [Expr v n] -> Either (DepError v n) (Dependencies v n)
+addEqs = foldM addEquation
+
+-- | @addEquation e d@: Add the equation @e = 0@ to the system d.
+addEquation :: (Hashable n, Hashable v, RealFrac (Phase n), Ord v,
           Floating n) =>
          Dependencies v n
-         -> Expr v n -> Either (DepError n) (Dependencies v n)
-addEq deps@(Dependencies _ lin _ _ _) expr =
+         -> Expr v n -> Either (DepError v n) (Dependencies v n)
+addEquation deps@(Dependencies _ lin _ _ _) expr =
   addEq0 deps $
   -- substitute known and dependend variables
   subst (flip M.lookup lin) expr
@@ -549,50 +645,60 @@ select :: [a] -> [(a, [a])]
 select [] = []
 select (x:xs) =
   (x,xs) : [(y,x:ys) | (y,ys) <- select xs]
-  
-addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Either (DepError n) (Dependencies v n)
+
+-- substitute v for lt in all linear equations
+-- if insertp is true, then add v = tl to equations
+substDep :: (Hashable v, Ord v, Num n, Eq n) =>
+             M.HashMap v (H.HashSet v) -> M.HashMap v (LinExpr v n)
+             -> v -> LinExpr v n -> Bool 
+             -> (M.HashMap v (H.HashSet v), LinearMap v n)
+substDep vdep lin v lt insertp =
+       -- variables that depend on v
+  let depVars = fromMaybe H.empty (M.lookup v vdep)
+      -- substitute v in all dependend variables and (optionally) add
+      -- v as dependend variable
+      lin' = (if insertp then M.insert v lt
+              else id) $
+             H.foldl' (flip $ M.adjust $
+                       substVarLin $
+                       simpleSubst v lt)
+             lin depVars
+      -- add dependency link from independend variables to the
+      -- substituted equations and (optionally) v, and remove v (since
+      -- it has become dependend, so no variable can depend on it).
+      depVars2 | insertp = H.insert v depVars
+               | otherwise = depVars
+      -- exclude dependend variable v if k has been canceled
+      tryUnion k m1 m2 =
+        let xs = H.intersection m1 m2
+            hasvar v2 = case M.lookup v2 lin' of
+              Nothing -> False
+              Just (LinExpr _ vs) ->
+                any ((==k).fst) vs
+        in H.filter hasvar xs
+           `H.union` H.difference m1 xs
+           `H.union` H.difference m2 xs
+      vdep' = H.foldl'
+              (\mp k -> M.insertWith (tryUnion k) k depVars2 mp)
+              (M.delete v vdep)
+              (H.fromList $ linVars lt)
+  in (vdep', lin')
+
+addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
 -- adding a constant equation
 addEq0 _  (ConstE c) =
-  if c == 0 then Left RedundantEq
-  else Left (InconsistentEq c)
+  Left $ if c == 0 then RedundantEq
+         else InconsistentEq c
 
 -- adding a linear equation
 addEq0 (Dependencies vdep lin trig trig2 nonlin) (Expr lt [] []) =
   let (v, _, lt2) = splitMax lt
-      -- variables that depend on v
-      depVars = fromMaybe H.empty (M.lookup v vdep)
-      -- substitute v in all dependend variables
-      -- and add v as dependend variable
-      lin' = M.insert v lt2 $
-             H.foldl' (flip $ M.adjust $ substVarLin $
-                       simpleSubst v lt2) lin depVars
-      -- independend variables substituted
-      ltVars = case lt2 of
-        LinExpr _ vars -> map fst vars
-      -- add dependency link from independend variables to the
-      -- substituted equations and v, and remove v (since it has
-      -- become dependend, so no variable can depend on it).
-      depVars2 = H.insert v depVars
-      vdep' = H.foldl'
-              (\mp k -> M.insertWith H.union k depVars2 mp)
-              (M.delete v vdep) (H.fromList ltVars)
-      -- simply substitute var in nonlinear eqs
-      nonlin' = map (subst (simpleSubst v lt2)) nonlin
-      -- substitute and evaluate trigonometric equations
-      trigSubst (p, a, ph, c) =
-        subst (simpleSubst v lt2) $
-        sin (LinearE $ LinExpr ph p) *
-        LinearE a + ConstE c
-      newTrig = map trigSubst trig
-      trigSubst2 (v2, ex) =
-        subst (simpleSubst v lt2) $
-        makeVariable v2 - ex
-      newTrig2 =
-        map trigSubst2 $
-        concatMap M.toList $
-        M.elems trig2
+      (vdep', lin') = substDep vdep lin v lt2 True
       
-  in addEqs (Dependencies vdep' lin' [] M.empty []) (newTrig++newTrig2++nonlin')
+      -- Add nonlinear equations again to the system.
+      trig' = map trigToExpr trig
+      trig2' = concatMap trig2ToExpr $ M.elems trig2
+  in addEqs (Dependencies vdep' lin' [] M.empty []) (trig'++trig2'++nonlin)
 
 -- adding a sine equation
 addEq0 deps@(Dependencies vdep lin trig trig2 nl)
@@ -665,6 +771,122 @@ addEq0 (Dependencies deps lin trig trig2 nl)
 addEq0 (Dependencies d lin trig trig2 nonlin) e =
   Right $ Dependencies d lin trig trig2 (e:nonlin)
 
+deleteDep :: (Hashable k, Hashable b, Eq k, Eq b) =>
+             M.HashMap b (H.HashSet k)
+          -> M.HashMap k (LinExpr b n) -> k
+          -> Maybe (M.HashMap b (H.HashSet k), M.HashMap k (LinExpr b n), LinExpr b n)
+deleteDep vdep lin v =
+  case M.lookup v lin of
+   Nothing -> Nothing
+   Just lt -> Just (vdep', lin', lt)
+     where
+       -- delete equation of v
+       lin' = M.delete v lin
+       -- delete v from dependencies
+       vdep' = H.foldl'
+               (flip $ M.adjust $ H.delete v)
+               vdep (H.fromList $ linVars lt)
+
+-- | Eliminate an variable from the equations.  Returns the eliminated
+-- equations.  Before elimination it performs substitution to minimize
+-- the number of eliminated equations.
+eliminate :: (Hashable n, Show n, Hashable v, RealFrac (Phase n), Ord v, Show v,
+              Floating n) => Dependencies v n -> v -> (Dependencies v n, [Expr v n])
+eliminate (Dependencies vdep lin trig trig2 nonlin) v
+  | Just (vdep', lin', lt) <- deleteDep vdep lin v =
+    -- v is dependend, so doesn't appear in other equations
+    (Dependencies vdep' lin' trig trig2 nonlin,
+     [LinearE lt - makeVariable v])
+  | Just vars <- M.lookup v vdep,
+    (v2:_) <- H.toList vars =
+      -- v is independend, and appears in a linear equation
+      case deleteDep vdep lin v2 of
+       Nothing ->
+         error $ "Internal error: found empty dependency on " ++ show v2
+       Just (vdep', lin', lt) ->
+         -- rearrange the deleted equation in terms of v
+         let lt2 = snd $ reArrange v2 lt v
+             -- substitute v in all equations
+             (vdep'', lin'') = substDep vdep' lin' v lt2 False
+             trig' = map trigToExpr trig
+             trig2' = concatMap trig2ToExpr $ M.elems trig2
+             deps = Dependencies vdep'' lin'' [] M.empty []
+             e = [LinearE lt2 - makeVariable v]
+          -- use addEq0 since substitution is unnecessary
+         in case foldM addEq0
+                 deps $
+                 map (subst $ simpleSubst v lt2)
+                 (trig'++trig2'++nonlin) of
+             Left _ -> (deps, e) --shouldn't happen
+             Right d -> (d, e)
+  | otherwise =
+      let (l, trig2') =
+            M.foldrWithKey trigFold
+            ([], M.empty) trig2
+          trigFold p t (l2, m2) =
+            let (l3, m1) = elimTrig p t v
+                mp | M.null m1 = m2
+                   | otherwise = M.insert p m1 m2
+            in (l3++l2, mp)
+            
+          (nlWith, nlWithout) =
+            partition (hasVar v) $
+            map trigToExpr trig ++ nonlin
+          deps = Dependencies vdep lin [] trig2' []
+      in case foldM addEq0 deps
+              nlWithout of
+             Left _ -> (deps, nlWith++l) --shouldn't happen
+             Right d -> (d, nlWith++l)
+
+-- v2 = c2*v + b + c
+reArrange :: (Show v, Ord v, Fractional n, Eq n) =>
+             v -> LinExpr v n -> v -> (n, LinExpr v n)
+reArrange v2 (LinExpr c vars) v =
+  case find ((==v).fst.fst) $ select vars of
+   Nothing ->
+     error $ "Internal error: variable " ++ show v ++
+     " not in linear expression "
+   Just ((_,c2), r) ->
+     (c2,
+      LinExpr (c/negate c2) r
+      `addLin` LinExpr 0 [(v2, 1/c2)])
+
+reArrangeTrig :: (Show v, Ord t1, Ord v, Floating t1) => v -> Expr v t1 -> v -> Expr v t1
+reArrangeTrig v2 (Expr lt trig _) v =
+  let (c2, lt2) = reArrange v2 lt v
+  in LinearE lt2 - trigExpr trig / ConstE c2
+  
+elimTrig :: (Show v, Ord v, Hashable v, Floating n, Ord n) =>
+            Period v n -> M.HashMap v (Expr v n) -> v
+         -> ([Expr v n], M.HashMap v (Expr v n))
+elimTrig p m v
+  -- period contains the variable, remove all eqs
+  | any ((==v).fst) p =
+      (trig2ToExpr m, M.empty)
+  -- the variable is dependend in:
+  -- v = e (== sin(p+const) + linear)
+  -- remove the eq
+  | Just e <- M.lookup v m =
+      ([makeVariable v - e],
+       M.delete v m)
+  -- the variable is independent in:
+  -- v2 = e (== sin(p+const) + const*v + linear)
+  -- rearrange, and substitute
+  | Just (v2, e) <-
+    find (hasVar v.snd) $ M.toList m =
+      let e2 = reArrangeTrig v2 e v
+          substOne (v3, c)
+            | v == v3 = e2 * ConstE c
+            | otherwise = makeVariable v3 * ConstE c
+          doSubst (Expr (LinExpr c lt) trig _) =
+            foldr ((+).substOne) 
+            (ConstE c + trigExpr trig) lt
+      in ([makeVariable v - e],
+          M.map doSubst $ M.delete v2 m)
+  -- variable not found
+  | otherwise =
+    ([], m)
+
 dmod :: RealFrac a => a -> a -> a
 dmod a b = abs((a/b) - fromInteger (round (a/b)) * b)
 
@@ -672,15 +894,15 @@ dmod a b = abs((a/b) - fromInteger (round (a/b)) * b)
 -- equation
 splitMax :: (Ord b, Fractional b, Eq v) => LinExpr v b -> (v, b, LinExpr v b)
 splitMax (LinExpr c t) =
-  let (v,c2) = maximumBy (compare `on` (abs.snd)) t
+  let ((v,c2),r) = maximumBy (compare `on` (abs.snd.fst)) $
+                   select t
   in (v, c2,
       LinExpr (-c/c2) $
-      map (fmap (negate.(/c2))) $
-      filter ((/= v).fst) t)
+      map (fmap (negate.(/c2))) r)
       
 -- | Return True if the variable is known or dependend.
-varDefined :: (Eq v, Hashable v) => Dependencies v n -> v -> Bool
-varDefined (Dependencies _ dep _ _ _) v =
+varDefined :: (Eq v, Hashable v) => v -> Dependencies v n -> Bool
+varDefined v (Dependencies _ dep _ _ _) =
   case M.lookup v dep of
     Nothing -> False
     _ -> True
@@ -711,8 +933,8 @@ knownVars (Dependencies _ lin _ _ _) =
 
 -- | Return the value of the variable, or a list of variables
 -- it depends on.  Only linear dependencies are shown.
-getKnown :: (Eq v, Hashable v) => Dependencies v n -> v -> Either [v] n
-getKnown (Dependencies _ lin _ _ _) var =
+getKnown :: (Eq v, Hashable v) => v -> Dependencies v n -> Either [v] n
+getKnown var (Dependencies _ lin _ _ _) =
   case M.lookup var lin of
     Nothing -> Left  []
     Just (LinExpr a []) ->
@@ -720,12 +942,7 @@ getKnown (Dependencies _ lin _ _ _) var =
     Just (LinExpr _ v) ->
       Left $ map fst v
 
-trigToExpr :: (Ord n, Ord v, Floating n) => TrigEq v n -> Expr v n
-trigToExpr (p, a, ph, c) =
-  LinearE a * sin(LinearE $ LinExpr ph p) +
-  ConstE c
-
--- | Give all nonlinear equations as an `Expr` equal to 0.
+-- | Return all nonlinear equations @e_i@, where @e_i = 0@.
 nonlinearEqs :: (Ord n, Ord v, Floating n) => Dependencies v n -> [Expr v n]
 nonlinearEqs  (Dependencies _ _ trig trig2 nl) =
   map trigToExpr trig ++
@@ -733,28 +950,80 @@ nonlinearEqs  (Dependencies _ _ trig trig2 nl) =
   (concatMap M.toList (M.elems trig2)) ++
   nl
   
--- | Make the pairs of expressions on both sides equal, and add the
--- result to the Set of dependencies.  No error is signaled if the
--- equation for one of the sides is redundant for example in (x, 0) ==
--- (y, 0).
-(=&=) :: (Hashable n, Hashable v, RealFrac (Phase n), Ord v, Floating n) => (Expr v n, Expr v n) -> (Expr v n, Expr v n) -> Dependencies v n -> Either (DepError n) (Dependencies v n)
-(=&=) (a, b) (c, d) dep = 
-  case (a === c) dep of
-    Left RedundantEq ->
-      (b === d) dep
-    Right res ->
-      case (b === d) res of
-        Left RedundantEq -> Right res
-        Right res2 -> Right res2
-        err -> err
-    err -> err
-
--- | Solve a list of equations in order.  Returns either a new set of
--- dependencies, or signals an error.
-solveEqs :: Dependencies v n -> [Dependencies v n -> Either (DepError n) (Dependencies v n)] -> Either (DepError n) (Dependencies v n)
-solveEqs = foldM $ flip ($)
-
--- | Show all variables and equations.
-showVars :: (Show n, Show v, Show a, Ord n, Ord v, Floating n) => Either (DepError a) (Dependencies v n) -> IO ()
+-- | Show all variables and equations.  Useful in combination with `execSolver`.
+showVars :: (Show n, Show v, Ord n, Ord v, Floating n) => Either (DepError v n) (Dependencies v n) -> IO ()
 showVars (Left e) = print e
 showVars (Right dep) = print dep
+
+-- | Get the dependencies from a state monad.  Specialized version of `get`.
+dependencies :: (MonadState (Dependencies v n) m) => m (Dependencies v n)
+dependencies = get
+
+-- | Return the value of the variable or throw an error.
+getValue :: (MonadState (Dependencies v n) m,
+             MonadError (DepError v n) m,
+             Eq v, Hashable v) =>
+            v -> m n
+getValue v = do
+  v2 <- getKnownM v
+  case v2 of
+   Right e -> return e
+   Left _ -> throwError $ UndefinedVar v
+
+-- | Monadic version of `varDefined`.
+varDefinedM :: (MonadState (Dependencies v n) m, Hashable v, Eq v) =>
+               v -> m Bool
+varDefinedM v = varDefined v `liftM` dependencies
+
+-- | Monadic version of `getKnown`
+getKnownM :: (MonadState (Dependencies v n) m, Hashable v, Eq v) =>
+             v -> m (Either [v] n)
+getKnownM v = getKnown v `liftM` dependencies
+
+infixr 1 === , =&=
+
+-- | Make the expressions on both sides equal
+(===) :: (MonadState (Dependencies v n) m,
+          MonadError (DepError v n) m,
+          Eq v, Hashable v, Hashable n,
+          RealFrac n, Floating n, Ord v) =>
+         Expr v n -> Expr v n -> m ()
+(===) lhs rhs = do
+  deps <- dependencies
+  case addEquation deps (lhs - rhs) of
+   Left e -> throwError e
+   Right dep -> put dep
+
+-- | Make the pairs of expressions on both sides equal. No error is
+-- signaled if the equation for one of the sides is `Redundant` for
+-- example in (x, 0) == (y, 0).
+(=&=) :: (MonadState (Dependencies v n) m,
+          MonadError (DepError v n) m,
+          Eq v, Hashable v, Hashable n,
+          RealFrac n, Floating n, Ord v) =>
+         (Expr v n, Expr v n) -> (Expr v n, Expr v n) -> m ()
+(=&=) (a, b) (c, d) =
+  do ignore $ a === c
+     b === d
+
+-- | Succeed even when trowing a `RedundantEq` error.
+ignore :: MonadError (DepError v n) m => m () -> m ()
+ignore m = m `catchError` (
+  \e -> case e of
+         RedundantEq -> return ()
+         _ -> throwError e)
+  
+-- | Return the result of solving the equations, or crash with an error.
+unsafeSolve :: (Show n, Show v) => MFSolver v n a -> Dependencies v n -> a
+unsafeSolve s dep = case runSolver s dep of
+  Right (_, v) -> v
+  Left e -> error $ show e
+
+-- | Return the result of solving the equations or an error.
+evalSolver :: MFSolver v n a -> Dependencies v n -> Either (DepError v n) a
+evalSolver s dep = snd <$> runSolver s dep 
+
+-- | Run the solver and return the dependencies or an error.
+execSolver :: MFSolver v n a -> Dependencies v n -> 
+              Either (DepError v n) (Dependencies v n)
+execSolver s dep = fst <$> runSolver s dep
