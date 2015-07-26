@@ -46,7 +46,7 @@ Solve for angle (pi/3) and amplitude:
 
 > showVars $ flip execSolver noDeps $ do
 >   a*sin(x) === sqrt 3
->   a*cos(x) === 1 ]
+>   a*cos(x) === 1
 
 > x = 1.0471975511965979
 > a = 2.0
@@ -87,7 +87,8 @@ module Math.MFSolve
         noDeps, 
         eliminate, addEquation,
         -- * Monadic Interface
-        dependencies, getValue, getKnownM, varDefinedM, (=&=), (===), ignore,  
+        dependencies, getValue, getKnownM, varDefinedM, eliminateM,
+        (=&=), (===), ignore,  
         runSolver, evalSolver, execSolver, unsafeSolve, showVars)
 where
 import qualified Data.HashMap.Strict as M
@@ -975,10 +976,20 @@ varDefinedM :: (MonadState (Dependencies v n) m, Hashable v, Eq v) =>
                v -> m Bool
 varDefinedM v = varDefined v `liftM` dependencies
 
--- | Monadic version of `getKnown`
+-- | Monadic version of `getKnown`.
 getKnownM :: (MonadState (Dependencies v n) m, Hashable v, Eq v) =>
              v -> m (Either [v] n)
 getKnownM v = getKnown v `liftM` dependencies
+
+-- | Monadic version of `eliminate`.
+eliminateM :: (MonadState (Dependencies v n) m, Hashable n, Hashable v,
+               Show n, Show v, RealFrac n, Ord v, Floating n) =>
+              v -> m [Expr v n]
+eliminateM v = do
+  dep <- dependencies
+  let (dep2, e) = eliminate dep v
+  put dep2
+  return e
 
 infixr 1 === , =&=
 
