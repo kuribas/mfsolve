@@ -1030,8 +1030,8 @@ ignore m = m `catchError` (
          _ -> throwError e)
   
 -- | Return the result of solving the equations, or throw the error as an exception.
-unsafeSolve :: (Typeable n, Typeable v, Show n, Show v) => MFSolver v n a -> Dependencies v n -> a
-unsafeSolve s dep = case runSolver s dep of
+unsafeSolve :: (Typeable n, Typeable v, Show n, Show v) => Dependencies v n -> MFSolver v n a -> a
+unsafeSolve dep s = case runSolver s dep of
   Right (_, v) -> v
   Left e -> throw e
 
