@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms, MultiParamTypeClasses, FlexibleContexts #-}
+{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms, MultiParamTypeClasses, FlexibleContexts, DeriveDataTypeable #-}
 
 {-|
 Module      : Math.MFSolve
@@ -96,6 +96,8 @@ import qualified Data.HashSet as H
 import GHC.Generics
 import Control.Monad.Except
 import Control.Monad.State
+import Control.Exception
+import Data.Typeable
 import Control.Applicative hiding (Const)
 import Data.Hashable
 import Data.Maybe
@@ -195,6 +197,9 @@ data DepError v n =
   -- | 'RedundantEq': The equation was reduced to the redundant equation 0 == 0, which
   -- means it doesn't add any information.
   RedundantEq
+  deriving Typeable
+
+instance (Show v, Show n, Typeable v, Typeable n) => Exception (DepError v n)
 
 instance (Ord n, Num n, Eq n, Show v, Show n) => Show (Expr v n) where
   show e = show (toSimple e)
@@ -228,7 +233,7 @@ instance Functor (MFSolver v n) where
     fmap f <$> runSolver s dep 
 
 instance Applicative (MFSolver v n) where
-  (<*>) = liftM2 ($)
+  (<*>) = ap
   pure = return
 
 withParens :: (Show t1, Show t, Ord t1, Num t1, Eq t1) => SimpleExpr t t1 -> [BinaryOp] -> String
@@ -1024,11 +1029,11 @@ ignore m = m `catchError` (
          RedundantEq -> return ()
          _ -> throwError e)
   
--- | Return the result of solving the equations, or crash with an error.
-unsafeSolve :: (Show n, Show v) => MFSolver v n a -> Dependencies v n -> a
+-- | Return the result of solving the equations, or throw the error as an exception.
+unsafeSolve :: (Typeable n, Typeable v, Show n, Show v) => MFSolver v n a -> Dependencies v n -> a
 unsafeSolve s dep = case runSolver s dep of
   Right (_, v) -> v
-  Left e -> error $ show e
+  Left e -> throw e
 
 -- | Return the result of solving the equations or an error.
 evalSolver :: MFSolver v n a -> Dependencies v n -> Either (DepError v n) a
