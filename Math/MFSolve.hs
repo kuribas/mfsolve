@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms, MultiParamTypeClasses, FlexibleContexts, DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms, MultiParamTypeClasses, FlexibleContexts, DeriveDataTypeable, GeneralizedNewtypeDeriving #-}
 
 {-|
 Module      : Math.MFSolve
@@ -23,7 +23,8 @@ variables.  The `Dependencies` datatype contains all dependencies and known equa
 === Examples:
 
 Let's define some variables.  The `SimpleVar` type is a simple wrapper
-around `String` to provide nice output.
+around `String` to provide nice output, since the Show instance for
+`String` outputs quotation marks.
 
 > let [x, y, t, a] = map (makeVariable . SimpleVar) ["x", "y", "t", "a"]
 
@@ -76,26 +77,35 @@ Find the angle and amplitude when using a rotation matrix:
 -}
 
 module Math.MFSolve
-       (-- * Types
-        MFSolver, SimpleExpr(..), Expr, LinExpr(..), UnaryOp(..), BinaryOp(..),
-        Dependencies, DepError(..), SimpleVar(..),
-        -- * Expressions
-        evalSimple, evalExpr, fromSimple, toSimple, makeVariable,
-        makeConstant, hasVar, 
+       (-- * Expressions
+        SimpleExpr(..), Expr, LinExpr(..), UnaryOp(..), BinaryOp(..),
+        SimpleVar(..),
+        makeVariable,
+        makeConstant, evalExpr, fromSimple, toSimple, evalSimple, hasVar, 
         -- * Dependencies
+        Dependencies, DepError(..), 
+        noDeps, addEquation, eliminate,
         getKnown, knownVars, varDefined, nonlinearEqs, dependendVars,
-        noDeps, 
-        eliminate, addEquation,
         -- * Monadic Interface
-        dependencies, getValue, getKnownM, varDefinedM, eliminateM,
-        (=&=), (===), ignore,  
-        runSolver, evalSolver, execSolver, unsafeSolve, showVars)
+        (===), (=&=), dependencies, getValue, getKnownM,
+        varDefinedM, eliminateM, ignore,
+        -- * MFSolver monad
+        MFSolver, 
+        runSolver, evalSolver, execSolver, unsafeSolve, showVars,
+        -- * MFSolverT monad transformer
+        MFSolverT, 
+        runSolverT, evalSolverT, execSolverT, unsafeSolveT)
 where
 import qualified Data.HashMap.Strict as M
 import qualified Data.HashSet as H
 import GHC.Generics
 import Control.Monad.Except
 import Control.Monad.State
+import Control.Monad.Reader
+import Control.Monad.Writer
+import Control.Monad.Identity
+import Control.Monad.RWS
+import Control.Monad.Cont
 import Control.Exception
 import Data.Typeable
 import Control.Applicative hiding (Const)
@@ -112,7 +122,8 @@ data UnaryOp =
   Tan | Sinh | Asin | Acos | Asinh | Acosh | Atan
   deriving (Eq, Generic)
 
--- | A simplified datatype representing an expression
+-- | A simplified datatype representing an expression.  This can be
+-- used to inspect the structure of a `Expr`, which is hidden.
 data SimpleExpr v n =
   SEBin BinaryOp (SimpleExpr v n) (SimpleExpr v n) |
   SEUn UnaryOp (SimpleExpr v n) |
@@ -122,7 +133,9 @@ data SimpleExpr v n =
 newtype SimpleVar = SimpleVar String
                   deriving (Eq, Ord, Generic)
 
--- | An mathematical expression of several variables.
+-- | A mathematical expression of several variables. Several Numeric
+-- instances (`Num`, `Floating` and `Fractional`) are provided, so
+-- doing calculations over `Expr` is more convenient.
 data Expr v n = Expr (LinExpr v n) [TrigTerm v n] [NonLinExpr v n]
                 deriving (Generic)
 
@@ -170,13 +183,20 @@ instance Hashable SimpleVar
 instance Show SimpleVar where
   show (SimpleVar s) = s
 
--- | An opaque datatype containing the dependencies of each variable.
--- A variable who's dependency is just a number is called /known/.  A
--- variables which depends on other variables is called /dependend/.
--- A variable which is neither known or dependend is called
--- /independend/.  A variable can only depend on other /independend/
--- variables.  It also contains nonlinear equations which it couldn't
--- reduce to a linear equation yet.
+-- | This hidden datatype represents a system of equations.  It
+-- contains linear dependencies on variables as well as nonlinear
+-- equations. The following terminology is used from /metafont/:
+-- 
+--   * /known variable/: A variable who's dependency is just a number.
+--   
+--   * /dependend variable/: A variable which depends linearly on other variables.
+--
+--   * /independend variable/: any other variable.
+--
+-- A /dependend/ variable can only depend on other /independend/
+-- variables.  Nonlinear equations will be simplified by substituting
+-- and evaluating known variables, or by reducing some trigonometric
+-- equations to linear equations.
 data Dependencies v n = Dependencies
                         (M.HashMap v (H.HashSet v))
                         (LinearMap v n)
@@ -184,18 +204,18 @@ data Dependencies v n = Dependencies
                         (TrigEq2 v n)
                         [Expr v n]
                         
--- | An error type for '===', '=&=' and 'solveEq':
+-- | An error type for '===', '=&=' and 'addEquation':
 data DepError v n =
-  -- | 'UndefinedVar' @v@: The variable is not defined.
+  -- | The variable is not defined.
   UndefinedVar v |
-  -- | 'UnknownVar' @v@: The variable is defined but dependend an other variables.
+  -- | The variable is defined but dependend an other variables.
   UnknownVar v n |
-  -- | 'InconsistentEq' @a@: The equation was reduced to the
+  -- | The equation was reduced to the
   -- impossible equation `a == 0` for nonzero a, which means the
   -- equation is inconsistent with previous equations.
   InconsistentEq n |
-  -- | 'RedundantEq': The equation was reduced to the redundant equation 0 == 0, which
-  -- means it doesn't add any information.
+  -- | The equation was reduced to the redundant equation `0 == 0`,
+  -- which means it doesn't add any information.
   RedundantEq
   deriving Typeable
 
@@ -204,37 +224,20 @@ instance (Show v, Show n, Typeable v, Typeable n) => Exception (DepError v n)
 instance (Ord n, Num n, Eq n, Show v, Show n) => Show (Expr v n) where
   show e = show (toSimple e)
 
--- | A monad for solving equations.  Basicly just a state and exception monad.
-newtype MFSolver v n a = MFSolver {
-  -- | Unwrap a solver monad as a function.
-  runSolver :: Dependencies v n -> Either (DepError v n) (Dependencies v n, a) }
+-- | A monad transformer for solving equations.  Basicly just a state and exception monad transformer over `Dependencies` and `DepError`.
+newtype MFSolverT v n m a = MFSolverT (StateT (Dependencies v n) (ExceptT (DepError v n) m) a)
+                            deriving (Functor, Applicative, Monad, MonadIO, MonadState (Dependencies v n),
+                                      MonadError (DepError v n), MonadReader s, MonadWriter s,
+                                      MonadCont)
 
-instance Monad (MFSolver v n) where
-  MFSolver s >>= f = MFSolver $ \dep ->
-    case s dep of
-     Left err -> Left err
-     Right (dep2, val) ->
-       runSolver (f val) dep2
-  return a = MFSolver $ \dep -> Right (dep, a)
+instance MonadTrans (MFSolverT v n) where
+  lift = MFSolverT . lift. lift
 
-instance (MonadState (Dependencies v n)) (MFSolver v n) where
-  get = MFSolver $ \dep -> Right (dep, dep)
-  put dep = MFSolver $ const $ Right (dep, ())
-           
-instance (MonadError (DepError v n)) (MFSolver v n) where
-  throwError e = MFSolver $ const $ Left e
-  catchError s h = MFSolver $ \dep ->
-    case runSolver s dep of
-     Left e -> runSolver (h e) dep
-     v -> v
+runSolverT :: MFSolverT v n m a -> Dependencies v n -> m (Either (DepError v n) (a, Dependencies v n))
+runSolverT (MFSolverT s) = runExceptT . runStateT s 
 
-instance Functor (MFSolver v n) where
-  fmap f s = MFSolver $ \dep ->
-    fmap f <$> runSolver s dep 
-
-instance Applicative (MFSolver v n) where
-  (<*>) = ap
-  pure = return
+-- | A monad for solving equations.  Basicly just a state and exception monad over `Dependencies` and `DepError`.
+type MFSolver v n a = MFSolverT v n Identity a
 
 withParens :: (Show t1, Show t, Ord t1, Num t1, Eq t1) => SimpleExpr t t1 -> [BinaryOp] -> String
 withParens e@(SEBin op _ _) ops
@@ -596,7 +599,7 @@ subst s (Expr lt trig nl) =
   foldr ((+).substVarTrig s) 0 trig +
   foldr ((+).substVarNonLin s) 0 nl
 
--- | An empty set of dependencies.
+-- | An empty system of equations.
 noDeps :: Dependencies v n
 noDeps = Dependencies M.empty M.empty [] M.empty []
 
@@ -618,7 +621,7 @@ trig2ToExpr =
 addEqs :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> [Expr v n] -> Either (DepError v n) (Dependencies v n)
 addEqs = foldM addEquation
 
--- | @addEquation e d@: Add the equation @e = 0@ to the system d.
+-- | @addEquation d e@: Add the equation @e = 0@ to the system d.
 addEquation :: (Hashable n, Hashable v, RealFrac (Phase n), Ord v,
           Floating n) =>
          Dependencies v n
@@ -796,6 +799,9 @@ deleteDep vdep lin v =
 -- | Eliminate an variable from the equations.  Returns the eliminated
 -- equations.  Before elimination it performs substitution to minimize
 -- the number of eliminated equations.
+-- 
+--__Important__: this function is
+-- still experimental and mostly untested.
 eliminate :: (Hashable n, Show n, Hashable v, RealFrac (Phase n), Ord v, Show v,
               Floating n) => Dependencies v n -> v -> (Dependencies v n, [Expr v n])
 eliminate (Dependencies vdep lin trig trig2 nonlin) v
@@ -1028,18 +1034,46 @@ ignore m = m `catchError` (
   \e -> case e of
          RedundantEq -> return ()
          _ -> throwError e)
-  
+
+-- | run the solver.
+runSolver :: MFSolver v n a -> Dependencies v n -> Either (DepError v n) (a, Dependencies v n)
+runSolver s = runIdentity . runSolverT s
+           
+-- | Return the result of solving the equations, or throw the error as an exception.  Monadic version.
+unsafeSolveT :: (Show n, Show v, Typeable n, Typeable v, Monad m) =>
+                Dependencies v n -> MFSolverT v n m a -> m a
+unsafeSolveT dep s = do
+  res <- runSolverT s dep
+  case res of
+   Right (v, _) -> return v
+   Left e -> throw e
+
+-- | Return the result of solving the equations or an error.  Monadic version.
+evalSolverT :: Functor f =>
+               MFSolverT v n f b
+            -> Dependencies v n -> f (Either (DepError v n) b)
+evalSolverT s dep =
+  fmap fst <$> runSolverT s dep 
+
+-- | Run the solver and return the dependencies or an error.  Monadic version.
+execSolverT :: Functor m =>
+               MFSolverT v n m a
+            -> Dependencies v n -> m (Either (DepError v n) (Dependencies v n))
+execSolverT s dep =
+  fmap snd <$> runSolverT s dep
+
 -- | Return the result of solving the equations, or throw the error as an exception.
-unsafeSolve :: (Typeable n, Typeable v, Show n, Show v) => Dependencies v n -> MFSolver v n a -> a
-unsafeSolve dep s = case runSolver s dep of
-  Right (_, v) -> v
-  Left e -> throw e
+unsafeSolve :: (Typeable n, Typeable v, Show n, Show v) =>
+               Dependencies v n -> MFSolver v n a -> a
+unsafeSolve dep = runIdentity . unsafeSolveT dep
 
 -- | Return the result of solving the equations or an error.
-evalSolver :: MFSolver v n a -> Dependencies v n -> Either (DepError v n) a
-evalSolver s dep = snd <$> runSolver s dep 
+evalSolver :: MFSolver v n a
+           -> Dependencies v n -> Either (DepError v n) a
+evalSolver s = runIdentity . evalSolverT s
 
 -- | Run the solver and return the dependencies or an error.
-execSolver :: MFSolver v n a -> Dependencies v n -> 
-              Either (DepError v n) (Dependencies v n)
-execSolver s dep = fst <$> runSolver s dep
+execSolver :: MFSolver v n a
+           -> Dependencies v n -> Either (DepError v n) (Dependencies v n)
+execSolver s = runIdentity . execSolverT s
+
