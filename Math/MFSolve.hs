@@ -104,7 +104,6 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Writer
 import Control.Monad.Identity
-import Control.Monad.RWS
 import Control.Monad.Cont
 import Control.Exception
 import Data.Typeable
@@ -1025,15 +1024,20 @@ infixr 1 === , =&=
           RealFrac n, Floating n, Ord v) =>
          (Expr v n, Expr v n) -> (Expr v n, Expr v n) -> m ()
 (=&=) (a, b) (c, d) =
-  do ignore $ a === c
-     b === d
+  do catchError (a === c) $ \e ->
+       case e of
+        RedundantEq ->
+          b === d
+        _ -> throwError e
+     ignore $ b === d
 
 -- | Succeed even when trowing a `RedundantEq` error.
 ignore :: MonadError (DepError v n) m => m () -> m ()
-ignore m = m `catchError` (
-  \e -> case e of
-         RedundantEq -> return ()
-         _ -> throwError e)
+ignore m =
+  catchError m $ \e ->
+  case e of
+   RedundantEq -> return ()
+   _ -> throwError e
 
 -- | run the solver.
 runSolver :: MFSolver v n a -> Dependencies v n -> Either (DepError v n) (a, Dependencies v n)
