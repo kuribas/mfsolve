@@ -81,7 +81,8 @@ module Math.MFSolve
         SimpleExpr(..), Expr, LinExpr(..), UnaryOp(..), BinaryOp(..),
         SimpleVar(..),
         makeVariable,
-        makeConstant, evalExpr, fromSimple, toSimple, evalSimple, hasVar, 
+        makeConstant, evalExpr, fromSimple, toSimple, evalSimple, hasVar,
+        mapSimple, mapExpr,
         -- * Dependencies
         Dependencies, DepError(..), 
         noDeps, addEquation, eliminate,
@@ -410,6 +411,20 @@ evalSimple g s (SEBin f e1 e2) =
   evalBin f (evalSimple g s e1) (evalSimple g s e2)
 evalSimple g s (SEUn f e) =
   evalUn f (evalSimple g s e)
+
+-- | map a simple expression using the given substitution.
+mapSimple :: (Floating m, Floating n) => (n -> m) -> (v -> u) -> SimpleExpr v n -> SimpleExpr u m
+mapSimple _ g (Var v) = Var (g v)
+mapSimple f _ (Const c) = Const (f c)
+mapSimple f g (SEBin h e1 e2) =
+  SEBin h (mapSimple f g e1) (mapSimple f g e2)
+mapSimple f g (SEUn h e) =
+  SEUn h (mapSimple f g e)
+
+-- | map an expression using the given substitution.
+mapExpr :: (Floating m, Floating n, Ord u, Ord v, Eq n, Ord m) =>
+           (n -> m) -> (v -> u) -> Expr v n -> Expr u m
+mapExpr f g = fromSimple . mapSimple f g . toSimple
 
 -- | Make a expression from a simple expression.
 fromSimple :: (Floating n, Ord n, Ord v) => SimpleExpr v n -> Expr v n
