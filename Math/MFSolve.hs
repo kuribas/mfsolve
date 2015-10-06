@@ -86,6 +86,7 @@ module Math.MFSolve
         -- * Dependencies
         Dependencies, DepError(..), 
         noDeps, addEquation, eliminate,
+        addEquality,
         getKnown, knownVars, varDefined, nonlinearEqs, dependendVars,
         -- * Monadic Interface
         (===), (=&=), dependencies, getValue, getKnownM,
@@ -213,13 +214,13 @@ data DepError v n =
   -- | The equation was reduced to the
   -- impossible equation `a == 0` for nonzero a, which means the
   -- equation is inconsistent with previous equations.
-  InconsistentEq n |
+  InconsistentEq n (Maybe (Expr v n, Expr v n)) |
   -- | The equation was reduced to the redundant equation `0 == 0`,
   -- which means it doesn't add any information.
-  RedundantEq
+  RedundantEq (Maybe (Expr v n, Expr v n))
   deriving Typeable
 
-instance (Show v, Show n, Typeable v, Typeable n) => Exception (DepError v n)
+instance (Ord n, Num n, Show v, Show n, Typeable v, Typeable n) => Exception (DepError v n)
 
 instance (Ord n, Num n, Eq n, Show v, Show n) => Show (Expr v n) where
   show e = show (toSimple e)
@@ -319,11 +320,15 @@ instance (Show n, Floating n, Ord n, Ord v, Show v) =>Show (Dependencies v n) wh
     where showLin (v, e) = show v ++ " = " ++ show (LinearE e)
           showNl e = show e ++ " = 0"
 
-instance (Show n, Show v) => Show (DepError v n) where
-  show (InconsistentEq a) =
+instance (Ord n, Num n , Show n, Show v) => Show (DepError v n) where
+  show (InconsistentEq a (Just (l, r))) =
+    "Inconsistent equations, " ++ show l ++ " === " ++ show r ++ " is off by " ++ show a
+  show (InconsistentEq a Nothing) =
     "Inconsistent equations, off by " ++ show a
-  show RedundantEq =
+  show (RedundantEq Nothing) =
     "Redundant Equation."
+  show (RedundantEq (Just (l, r))) =
+    "Redundant Equation " ++ show l ++ " === " ++ show r 
   show (UndefinedVar v) =
     error ("Variable is undefined: " ++ show v)
   show (UnknownVar v n) =
@@ -645,6 +650,15 @@ addEquation deps@(Dependencies _ lin _ _ _) expr =
   -- substitute known and dependend variables
   subst (flip M.lookup lin) expr
   
+addEquality :: (Hashable n, Hashable v, RealFrac (Phase n), Ord v,
+          Floating n) =>
+         Dependencies v n
+         -> Expr v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
+addEquality deps@(Dependencies _ lin _ _ _) lhs rhs =
+  addEquality0 lhs rhs deps $
+  -- substitute known and dependend variables
+  subst (flip M.lookup lin) (lhs - rhs)
+
 -- the following alternative would continue after a redundant error.
 -- However a redundant expression is supposed to be an error in metafont.
 -- 
@@ -707,11 +721,20 @@ substDep vdep lin v lt insertp =
               (H.fromList $ linVars lt)
   in (vdep', lin')
 
+addEquality0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Expr v n -> Expr v n -> Dependencies v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
+-- adding a constant equation
+
+addEquality0 lhs rhs whatever diff =
+    case addEq0 whatever diff of
+      Left (RedundantEq Nothing) -> Left (RedundantEq (Just (lhs, rhs)))
+      Left (InconsistentEq c Nothing) -> Left (InconsistentEq c (Just (lhs, rhs)))
+      answer -> answer
+
 addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
 -- adding a constant equation
 addEq0 _  (ConstE c) =
-  Left $ if c == 0 then RedundantEq
-         else InconsistentEq c
+  Left $ if c == 0 then RedundantEq Nothing
+         else InconsistentEq c Nothing
 
 -- adding a linear equation
 addEq0 (Dependencies vdep lin trig trig2 nonlin) (Expr lt [] []) =
@@ -1026,7 +1049,7 @@ infixr 1 === , =&=
          Expr v n -> Expr v n -> m ()
 (===) lhs rhs = do
   deps <- dependencies
-  case addEquation deps (lhs - rhs) of
+  case addEquality deps lhs rhs of
    Left e -> throwError e
    Right dep -> put dep
 
@@ -1041,7 +1064,7 @@ infixr 1 === , =&=
 (=&=) (a, b) (c, d) =
   do catchError (a === c) $ \e ->
        case e of
-        RedundantEq ->
+        RedundantEq _ ->
           b === d
         _ -> throwError e
      ignore $ b === d
@@ -1051,7 +1074,7 @@ ignore :: MonadError (DepError v n) m => m () -> m ()
 ignore m =
   catchError m $ \e ->
   case e of
-   RedundantEq -> return ()
+   RedundantEq _ -> return ()
    _ -> throwError e
 
 -- | run the solver.
@@ -1059,7 +1082,7 @@ runSolver :: MFSolver v n a -> Dependencies v n -> Either (DepError v n) (a, Dep
 runSolver s = runIdentity . runSolverT s
            
 -- | Return the result of solving the equations, or throw the error as an exception.  Monadic version.
-unsafeSolveT :: (Show n, Show v, Typeable n, Typeable v, Monad m) =>
+unsafeSolveT :: (Ord n, Num n, Show n, Show v, Typeable n, Typeable v, Monad m) =>
                 Dependencies v n -> MFSolverT v n m a -> m a
 unsafeSolveT dep s = do
   res <- runSolverT s dep
@@ -1082,7 +1105,7 @@ execSolverT s dep =
   fmap snd <$> runSolverT s dep
 
 -- | Return the result of solving the equations, or throw the error as an exception.
-unsafeSolve :: (Typeable n, Typeable v, Show n, Show v) =>
+unsafeSolve :: (Ord n, Num n, Typeable n, Typeable v, Show n, Show v) =>
                Dependencies v n -> MFSolver v n a -> a
 unsafeSolve dep = runIdentity . unsafeSolveT dep
 
