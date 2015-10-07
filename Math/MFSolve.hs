@@ -131,7 +131,7 @@ data SimpleExpr v n =
   Const n
 
 newtype SimpleVar = SimpleVar String
-                  deriving (Eq, Ord, Generic)
+                  deriving (Eq, Ord, Generic, Typeable)
 
 -- | A mathematical expression of several variables. Several Numeric
 -- instances (`Num`, `Floating` and `Fractional`) are provided, so
