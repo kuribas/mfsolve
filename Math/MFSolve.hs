@@ -730,11 +730,13 @@ addEquality0 lhs rhs whatever diff =
       Left (InconsistentEq c Nothing) -> Left (InconsistentEq c (Just (lhs, rhs)))
       answer -> answer
 
+
 addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
 -- adding a constant equation
 addEq0 _  (ConstE c) =
-  Left $ if c == 0 then RedundantEq Nothing
+  Left $ if abs c < epsilon then RedundantEq Nothing
          else InconsistentEq c Nothing
+  where epsilon = 0.0001
 
 -- adding a linear equation
 addEq0 (Dependencies vdep lin trig trig2 nonlin) (Expr lt [] []) =
