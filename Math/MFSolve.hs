@@ -589,7 +589,9 @@ unExpr f e = nonlinExpr [UnaryApp f e]
 substVarLin :: (Ord v, Num n, Eq n) => (v -> Maybe (LinExpr v n)) -> LinExpr v n -> LinExpr v n
 substVarLin s (LinExpr a terms) =
   let substOne (v, c) =
-        maybe (LinExpr 0 [(v, c)]) (mulLinExpr c) (s v)
+        case s v of
+         Nothing -> LinExpr 0 [(v, c)]
+         Just expr -> mulLinExpr c expr
   in foldr (addLin.substOne) (LinExpr a []) terms
 
 substVarNonLin :: (Ord n, Ord v, Floating n) => (v -> Maybe (LinExpr v n)) -> NonLinExpr v n -> Expr v n
