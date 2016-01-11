@@ -107,10 +107,10 @@ solveOne eqs =
   case flip execSolver noDeps $
        mapM (uncurry (===) . snd) eqs
   of
-   Left RedundantEq ->
-     "Found redundant equation"
-   Left (InconsistentEq n) ->
-     "Equation off by "++ show n
+   Left (RedundantEq e) ->
+     "Found redundant equation.  Last equation: " ++ show e
+   Left (InconsistentEq n e) ->
+     "Equation off by "++ show n ++ ".  Last equation: " ++ show e
    Right d
      | not $ null $ nonlinearEqs d ->
        "Some nonlinear equations were unevaluated:\n" ++
