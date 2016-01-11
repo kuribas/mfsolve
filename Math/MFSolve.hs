@@ -249,13 +249,13 @@ data DepError v n =
   -- | The equation was reduced to the
   -- impossible equation `a == 0` for nonzero a, which means the
   -- equation is inconsistent with previous equations.
-  InconsistentEq n |
+  InconsistentEq n (Expr v n) |
   -- | The equation was reduced to the redundant equation `0 == 0`,
   -- which means it doesn't add any information.
-  RedundantEq
+  RedundantEq (Expr v n)
   deriving Typeable
 
-instance (Show v, Show n, Typeable v, Typeable n) => Exception (DepError v n)
+instance (Ord n, Num n, Show v, Show n, Typeable v, Typeable n) => Exception (DepError v n)
 
 instance (Ord n, Num n, Eq n, Show v, Show n) => Show (Expr v n) where
   show e = show (toSimple e)
@@ -357,11 +357,12 @@ instance (Show n, Floating n, Ord n, Ord v, Show v) =>Show (Dependencies v n) wh
     where showLin (v, e) = show v ++ " = " ++ show (LinearE e)
           showNl e = show e ++ " = 0"
 
-instance (Show n, Show v) => Show (DepError v n) where
-  show (InconsistentEq a) =
-    "Inconsistent equations, off by " ++ show a
-  show RedundantEq =
-    "Redundant Equation."
+instance (Num n, Ord n, Show n, Show v) => Show (DepError v n) where
+  show (InconsistentEq a e) =
+    "Inconsistent equations, off by " ++ show a ++
+    ".  original expression: " ++ show e
+  show (RedundantEq e) =
+    "Redundant Equation: " ++ show e
   show (UndefinedVar v) =
     error ("Variable is undefined: " ++ show v)
   show (UnknownVar v n) =
@@ -475,6 +476,9 @@ evalExpr = evalSimple id
 
 zeroTerm :: (Num n) => LinExpr v n
 zeroTerm = LConst 0
+
+zeroExpr :: (Num n) => Expr v n
+zeroExpr = makeConstant 0
 
 -- | Create an expression from a constant
 makeConstant :: n -> Expr v n
@@ -682,7 +686,7 @@ addEquation :: (Hashable n, Hashable v, RealFrac (Phase n), Ord v,
          Dependencies v n
          -> Expr v n -> Either (DepError v n) (Dependencies v n)
 addEquation deps@(Dependencies _ lin _ _ _) expr =
-  addEq0 deps $
+  addEq0 deps expr $
   -- substitute known and dependend variables
   subst (flip M.lookup lin) expr
   
@@ -748,14 +752,16 @@ substDep vdep lin v lt insertp =
               (H.fromList $ linVars lt)
   in (vdep', lin')
 
-addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
+addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
 -- adding a constant equation
-addEq0 _  (ConstE c) =
-  Left $ if c == 0 then RedundantEq
-         else InconsistentEq c
+addEq0 _ e (ConstE c) =
+  Left $ if abs c < eps
+         then RedundantEq e
+         else InconsistentEq c e
+  where eps = 0.0001
 
 -- adding a linear equation
-addEq0 (Dependencies vdep lin trig trig2 nonlin) (Expr lt [] []) =
+addEq0 (Dependencies vdep lin trig trig2 nonlin) _ (Expr lt [] []) =
   let (v, _, lt2) = splitMax lt
       (vdep', lin') = substDep vdep lin v lt2 True
       
@@ -765,11 +771,11 @@ addEq0 (Dependencies vdep lin trig trig2 nonlin) (Expr lt [] []) =
   in addEqs (Dependencies vdep' lin' [] M.empty []) (trig'++trig2'++nonlin)
 
 -- adding a sine equation
-addEq0 deps@(Dependencies vdep lin trig trig2 nl)
+addEq0 deps@(Dependencies vdep lin trig trig2 nl) orig
   (Expr (LinExpr c lt) [(theta, [(alpha, LConst n)])] []) =
   if null lt then
     -- reduce a sine to linear equation
-    addEq0 deps (LinearE $ LinExpr (alpha - asin (-c/n)) theta)
+    addEq0 deps orig (LinearE $ LinExpr (alpha - asin (-c/n)) theta)
   else
     -- add a variable dependency on the sine equation
     case M.lookup theta trig2 of
@@ -784,7 +790,7 @@ addEq0 deps@(Dependencies vdep lin trig trig2 nl)
         Expr lt2 [(_, [(alpha2, LConst n2)])] []
           | not $ isConst lt2
           -> addSin lt2 alpha2 n2
-        e2 -> addEq0 deps e2
+        e2 -> addEq0 deps orig e2
        where
          doSubst (v,c2) = case M.lookup v map2 of
            Nothing -> makeVariable v * ConstE c2
@@ -799,12 +805,12 @@ addEq0 deps@(Dependencies vdep lin trig trig2 nl)
       in Right $ Dependencies  vdep lin trig trig2' nl
 
 --  adding the first sine equation
-addEq0 (Dependencies d lin [] trig2 nl)
+addEq0 (Dependencies d lin [] trig2 nl) _
   (Expr (LConst c) [(theta, [(alpha, n)])] []) =
   Right $ Dependencies d lin [(theta, n, alpha, c)] trig2 nl
 
 -- try reducing this equation with another sine equation
-addEq0 (Dependencies deps lin trig trig2 nl)
+addEq0 (Dependencies deps lin trig trig2 nl) _
   (Expr (LConst x) [(theta, [(a, n)])] []) =
   case mapMaybe similarTrig $ select trig of
    -- no matching equation found
@@ -832,7 +838,7 @@ addEq0 (Dependencies deps lin trig trig2 nl)
       | otherwise = Nothing
 
 -- just add any other equation to the list of nonlinear equations
-addEq0 (Dependencies d lin trig trig2 nonlin) e =
+addEq0 (Dependencies d lin trig trig2 nonlin) _ e =
   Right $ Dependencies d lin trig trig2 (e:nonlin)
 
 deleteDep :: (Hashable k, Hashable b, Eq k, Eq b) =>
@@ -880,7 +886,7 @@ eliminate (Dependencies vdep lin trig trig2 nonlin) v
              deps = Dependencies vdep'' lin'' [] M.empty []
              e = [LinearE lt2 - makeVariable v]
           -- use addEq0 since substitution is unnecessary
-         in case foldM addEq0
+         in case foldM (flip addEq0 zeroExpr)
                  deps $
                  map (subst $ simpleSubst v lt2)
                  (trig'++trig2'++nonlin) of
@@ -900,7 +906,7 @@ eliminate (Dependencies vdep lin trig trig2 nonlin) v
             partition (hasVar v) $
             map trigToExpr trig ++ nonlin
           deps = Dependencies vdep lin [] trig2' []
-      in case foldM addEq0 deps
+      in case foldM (flip addEq0 zeroExpr) deps
               nlWithout of
              Left _ -> (deps, nlWith++l) --shouldn't happen
              Right d -> (d, nlWith++l)
@@ -1082,7 +1088,7 @@ infixr 1 === , =&=
 (=&=) (a, b) (c, d) =
   do catchError (a === c) $ \e ->
        case e of
-        RedundantEq ->
+        RedundantEq _ ->
           b === d
         _ -> throwError e
      ignore $ b === d
@@ -1092,7 +1098,7 @@ ignore :: MonadError (DepError v n) m => m () -> m ()
 ignore m =
   catchError m $ \e ->
   case e of
-   RedundantEq -> return ()
+   RedundantEq _ -> return ()
    _ -> throwError e
 
 -- | run the solver.
@@ -1100,7 +1106,7 @@ runSolver :: MFSolver v n a -> Dependencies v n -> Either (DepError v n) (a, Dep
 runSolver s = runIdentity . runSolverT s
            
 -- | Return the result of solving the equations, or throw the error as an exception.  Monadic version.
-unsafeSolveT :: (Show n, Show v, Typeable n, Typeable v, Monad m) =>
+unsafeSolveT :: (Num n, Ord n, Show n, Show v, Typeable n, Typeable v, Monad m) =>
                 Dependencies v n -> MFSolverT v n m a -> m a
 unsafeSolveT dep s = do
   res <- runSolverT s dep
@@ -1123,7 +1129,7 @@ execSolverT s dep =
   fmap snd <$> runSolverT s dep
 
 -- | Return the result of solving the equations, or throw the error as an exception.
-unsafeSolve :: (Typeable n, Typeable v, Show n, Show v) =>
+unsafeSolve :: (Typeable n, Typeable v, Show n, Show v, Ord n, Num n) =>
                Dependencies v n -> MFSolver v n a -> a
 unsafeSolve dep = runIdentity . unsafeSolveT dep
 
