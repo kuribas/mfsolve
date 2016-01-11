@@ -114,12 +114,48 @@ import Data.Maybe
 import Data.List
 import Data.Function(on)
 
-data BinaryOp = Add | Mul
-              deriving Eq
+data BinaryOp =
+  -- | Addition
+  Add |
+  -- | Multiplication
+  Mul
+  deriving Eq
+
 data UnaryOp =
-  Sin | Abs | Recip | Signum |
-  Exp | Log | Cos | Cosh | Atanh |
-  Tan | Sinh | Asin | Acos | Asinh | Acosh | Atan
+  -- | sine
+  Sin |
+  -- | cosine
+  Cos |
+  -- | absolute value
+  Abs |
+  -- | reciprocal (1/x)
+  Recip |
+  -- | sign
+  Signum |
+  -- | natural exponential (e^x)
+  Exp |
+  -- | natural logarithm (log x)
+  Log |
+  -- | hyperbolic cosine
+  Cosh |
+  -- | inverse hyperbolic tangent
+  Atanh |
+  -- | tangent
+  Tan |
+  -- | hyperbolic tangent
+  Tanh |
+  -- | hyperbolic sine
+  Sinh |
+  -- | inverse sine
+  Asin |
+  -- | inverse cosine
+  Acos |
+  -- | inverse hyperbolic sine
+  Asinh |
+  -- | inverse hyperbolic cosine
+  Acosh |
+  -- | inverse tangent
+  Atan
   deriving (Eq, Generic)
 
 -- | A simplified datatype representing an expression.  This can be
@@ -277,6 +313,7 @@ instance Show UnaryOp where
   show Cosh = "cosh"
   show Atanh = "atanh"
   show Tan = "tan"
+  show Tanh = "tanh"
   show Sinh = "sinh"
   show Asin = "asin"
   show Acos = "acos"
@@ -305,6 +342,7 @@ instance (Floating n, Ord n, Ord v) => Floating (Expr v n) where
   cosh = unExpr Cosh
   atanh = unExpr Atanh
   tan = unExpr Tan
+  tanh = unExpr Tanh
   sinh = unExpr Sinh
   asin = unExpr Asin
   acos = unExpr Acos
@@ -396,6 +434,7 @@ evalUn Cos = cos
 evalUn Cosh = cosh
 evalUn Atanh = atanh
 evalUn Tan = tan
+evalUn Tanh = tanh
 evalUn Sinh = sinh
 evalUn Asin = asin
 evalUn Acos = acos
