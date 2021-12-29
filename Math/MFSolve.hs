@@ -173,7 +173,7 @@ newtype SimpleVar = SimpleVar String
 -- instances (`Num`, `Floating` and `Fractional`) are provided, so
 -- doing calculations over `Expr` is more convenient.
 data Expr v n = Expr (LinExpr v n) [TrigTerm v n] [NonLinExpr v n]
-                deriving (Generic)
+                deriving (Eq, Generic)
 
 -- | A linear expression of several variables.
 -- For example: @2*a + 3*b + 2@ would be represented as
@@ -196,7 +196,7 @@ data NonLinExpr v n =
   UnaryApp UnaryOp (Expr v n) |
   MulExp (Expr v n) (Expr v n) |
   SinExp (Expr v n)
-  deriving Generic
+  deriving (Eq, Generic)
 
 -- | An angular function of the form @c + n*sin(theta + alpha)@
 -- where @theta@, and @n@ are linear terms, @alpha@ and @c@ are constants.
