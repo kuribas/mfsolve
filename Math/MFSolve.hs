@@ -1,4 +1,6 @@
-{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms, MultiParamTypeClasses, FlexibleContexts, DeriveDataTypeable, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveGeneric, PatternGuards, PatternSynonyms,
+    MultiParamTypeClasses, FlexibleContexts, DeriveDataTypeable,
+    GeneralizedNewtypeDeriving #-}
 
 {-|
 Module      : Math.MFSolve
@@ -255,27 +257,33 @@ data DepError v n =
   RedundantEq (Expr v n)
   deriving Typeable
 
-instance (Ord n, Num n, Show v, Show n, Typeable v, Typeable n) => Exception (DepError v n)
+instance (Ord n, Num n, Show v, Show n, Typeable v, Typeable n)
+       => Exception (DepError v n)
 
 instance (Ord n, Num n, Eq n, Show v, Show n) => Show (Expr v n) where
   show e = show (toSimple e)
 
--- | A monad transformer for solving equations.  Basicly just a state and exception monad transformer over `Dependencies` and `DepError`.
-newtype MFSolverT v n m a = MFSolverT (StateT (Dependencies v n) (ExceptT (DepError v n) m) a)
-                            deriving (Functor, Applicative, Monad, MonadIO, MonadState (Dependencies v n),
-                                      MonadError (DepError v n), MonadReader s, MonadWriter s,
-                                      MonadCont)
+-- | A monad transformer for solving equations.  Basicly just a state
+-- and exception monad transformer over `Dependencies` and `DepError`.
+newtype MFSolverT v n m a =
+  MFSolverT (StateT (Dependencies v n) (ExceptT (DepError v n) m) a)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadState (Dependencies v n),
+             MonadError (DepError v n), MonadReader s, MonadWriter s,
+             MonadCont)
 
 instance MonadTrans (MFSolverT v n) where
   lift = MFSolverT . lift. lift
 
-runSolverT :: MFSolverT v n m a -> Dependencies v n -> m (Either (DepError v n) (a, Dependencies v n))
+runSolverT :: MFSolverT v n m a -> Dependencies v n
+           -> m (Either (DepError v n) (a, Dependencies v n))
 runSolverT (MFSolverT s) = runExceptT . runStateT s 
 
--- | A monad for solving equations.  Basicly just a state and exception monad over `Dependencies` and `DepError`.
+-- | A monad for solving equations.  Basicly just a state and
+-- exception monad over `Dependencies` and `DepError`.
 type MFSolver v n a = MFSolverT v n Identity a
 
-withParens :: (Show t1, Show t, Ord t1, Num t1, Eq t1) => SimpleExpr t t1 -> [BinaryOp] -> String
+withParens :: (Show t1, Show t, Ord t1, Num t1, Eq t1) => SimpleExpr t t1
+           -> [BinaryOp] -> String
 withParens e@(SEBin op _ _) ops
   | op `elem` ops = "(" ++ show e ++ ")"
 withParens e _ = show e
@@ -350,7 +358,8 @@ instance (Floating n, Ord n, Ord v) => Floating (Expr v n) where
   acosh = unExpr Acosh
   atan = unExpr Atan
 
-instance (Show n, Floating n, Ord n, Ord v, Show v) =>Show (Dependencies v n) where
+instance (Show n, Floating n, Ord n, Ord v, Show v)
+    => Show (Dependencies v n) where
   show dep@(Dependencies _ lin _ _ _) = 
     unlines (map showLin (M.toList lin) ++
              map showNl (nonlinearEqs dep))
@@ -453,7 +462,8 @@ evalSimple g s (SEUn f e) =
   evalUn f (evalSimple g s e)
 
 -- | map a simple expression using the given substitution.
-mapSimple :: (Floating m, Floating n) => (n -> m) -> (v -> u) -> SimpleExpr v n -> SimpleExpr u m
+mapSimple :: (Floating m, Floating n) => (n -> m) -> (v -> u) -> SimpleExpr v n
+          -> SimpleExpr u m
 mapSimple _ g (Var v) = Var (g v)
 mapSimple f _ (Const c) = Const (f c)
 mapSimple f g (SEBin h e1 e2) =
@@ -524,7 +534,9 @@ merge (a@(k,v):as) (b@(k2,v2):bs) f = case compare k k2 of
   GT -> b: merge (a:as) bs f
 
 -- add trigonometric terms with the same period
-addTrigTerms :: (Ord a, Ord t, Floating a) => [(a, LinExpr t a)] -> [(a, LinExpr t a)] -> [(a, LinExpr t a)]
+addTrigTerms :: (Ord a, Ord t, Floating a)
+             => [(a, LinExpr t a)] -> [(a, LinExpr t a)]
+             -> [(a, LinExpr t a)]
 addTrigTerms [] p = p
 addTrigTerms terms terms2 =
   foldr mergeTerms terms terms2
@@ -538,7 +550,8 @@ addTrigTerms terms terms2 =
          (beta, m) : mergeTerms (alpha, n) rest
     mergeTerms a [] = [a]
 
-addTrigTerm :: (Ord a, Ord t, Floating a) => a -> LinExpr t a -> a -> LinExpr t a -> Maybe (a, LinExpr t a)
+addTrigTerm :: (Ord a, Ord t, Floating a)
+            => a -> LinExpr t a -> a -> LinExpr t a -> Maybe (a, LinExpr t a)
 addTrigTerm alpha n beta m
   | alpha == beta =
     Just (alpha, addLin n m)
@@ -552,7 +565,8 @@ addTrigTerm alpha n beta m
   | otherwise = Nothing
 
 -- compare if the linear term is a multiple of the other, within roundoff                
-termIsMultiple :: (Ord a, Fractional a, Eq t) => LinExpr t a -> LinExpr t a -> Maybe a
+termIsMultiple :: (Ord a, Fractional a, Eq t)
+               => LinExpr t a -> LinExpr t a -> Maybe a
 termIsMultiple (LinExpr _ _) (LinExpr 0 []) = Nothing
 termIsMultiple (LinExpr 0 []) (LinExpr _ _) = Nothing
 termIsMultiple (LinExpr 0 r1@((_, d1):_)) (LinExpr 0 r2@((_, d2):_))
@@ -584,7 +598,8 @@ mulConstTrig :: (Ord n, Num n) => n -> TrigTerm v n -> TrigTerm v n
 mulConstTrig c (theta, terms) =  (theta, tt) where
   tt = map (fmap (mulLinExpr c)) terms
 
-mulLinTrig :: (Ord n, Ord v, Floating n) => LinExpr v n -> TrigTerm v n -> Expr v n
+mulLinTrig :: (Ord n, Ord v, Floating n)
+           => LinExpr v n -> TrigTerm v n -> Expr v n
 mulLinTrig lt (theta, terms) =
   -- linear multiplier
   foldr ((+).mul1) 0 terms
@@ -629,7 +644,8 @@ unExpr :: Floating n => UnaryOp -> Expr v n -> Expr v n
 unExpr f (ConstE c) = ConstE (evalUn f c)
 unExpr f e = nonlinExpr [UnaryApp f e]
 
-substVarLin :: (Ord v, Num n, Eq n) => (v -> Maybe (LinExpr v n)) -> LinExpr v n -> LinExpr v n
+substVarLin :: (Ord v, Num n, Eq n)
+            => (v -> Maybe (LinExpr v n)) -> LinExpr v n -> LinExpr v n
 substVarLin s (LinExpr a terms) =
   let substOne (v, c) =
         case s v of
@@ -637,7 +653,8 @@ substVarLin s (LinExpr a terms) =
          Just expr -> mulLinExpr c expr
   in foldr (addLin.substOne) (LinExpr a []) terms
 
-substVarNonLin :: (Ord n, Ord v, Floating n) => (v -> Maybe (LinExpr v n)) -> NonLinExpr v n -> Expr v n
+substVarNonLin :: (Ord n, Ord v, Floating n)
+               => (v -> Maybe (LinExpr v n)) -> NonLinExpr v n -> Expr v n
 substVarNonLin s (UnaryApp f e1) =
   unExpr f (subst s e1)
 substVarNonLin s (MulExp e1 e2) =
@@ -645,14 +662,16 @@ substVarNonLin s (MulExp e1 e2) =
 substVarNonLin s (SinExp e1) =
   sin (subst s e1)
 
-substVarTrig :: (Ord v, Ord n, Floating n) => (v -> Maybe (LinExpr v n)) -> ([(v, n)], [(n, LinExpr v n)]) -> Expr v n
+substVarTrig :: (Ord v, Ord n, Floating n)
+             => (v -> Maybe (LinExpr v n)) -> ([(v, n)], [(n, LinExpr v n)]) -> Expr v n
 substVarTrig s (period, terms) =
   let period2 = LinearE $ substVarLin s (LinExpr 0 period)
       terms2 = map (fmap $ LinearE . substVarLin s) terms
   in foldr (\(p,a) -> (+ (a * sin (ConstE p + period2))))
      0 terms2
 
-subst :: (Ord n, Ord v, Floating n) => (v -> Maybe (LinExpr v n)) -> Expr v n -> Expr v n
+subst :: (Ord n, Ord v, Floating n)
+      => (v -> Maybe (LinExpr v n)) -> Expr v n -> Expr v n
 subst s (Expr lt trig nl) =
   LinearE (substVarLin s lt) +
   foldr ((+).substVarTrig s) 0 trig +
@@ -677,7 +696,9 @@ trig2ToExpr =
   map (\(v,e)-> makeVariable v-e)
   . M.toList
 
-addEqs :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> [Expr v n] -> Either (DepError v n) (Dependencies v n)
+addEqs :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n)
+       => Dependencies v n -> [Expr v n]
+       -> Either (DepError v n) (Dependencies v n)
 addEqs = foldM addEquation
 
 -- | @addEquation d e@: Add the equation @e = 0@ to the system d.
@@ -752,7 +773,9 @@ substDep vdep lin v lt insertp =
               (H.fromList $ linVars lt)
   in (vdep', lin')
 
-addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n) => Dependencies v n -> Expr v n -> Expr v n -> Either (DepError v n) (Dependencies v n)
+addEq0 :: (Hashable v, Hashable n, RealFrac (Phase n), Ord v, Floating n)
+       => Dependencies v n -> Expr v n -> Expr v n
+       -> Either (DepError v n) (Dependencies v n)
 -- adding a constant equation
 addEq0 _ e (ConstE c) =
   Left $ if abs c < eps
@@ -844,7 +867,8 @@ addEq0 (Dependencies d lin trig trig2 nonlin) _ e =
 deleteDep :: (Hashable k, Hashable b, Eq k, Eq b) =>
              M.HashMap b (H.HashSet k)
           -> M.HashMap k (LinExpr b n) -> k
-          -> Maybe (M.HashMap b (H.HashSet k), M.HashMap k (LinExpr b n), LinExpr b n)
+          -> Maybe (M.HashMap b (H.HashSet k), M.HashMap k (LinExpr b n),
+                    LinExpr b n)
 deleteDep vdep lin v =
   case M.lookup v lin of
    Nothing -> Nothing
@@ -864,7 +888,8 @@ deleteDep vdep lin v =
 --__Important__: this function is
 -- still experimental and mostly untested.
 eliminate :: (Hashable n, Show n, Hashable v, RealFrac (Phase n), Ord v, Show v,
-              Floating n) => Dependencies v n -> v -> (Dependencies v n, [Expr v n])
+              Floating n)
+          => Dependencies v n -> v -> (Dependencies v n, [Expr v n])
 eliminate (Dependencies vdep lin trig trig2 nonlin) v
   | Just (vdep', lin', lt) <- deleteDep vdep lin v =
     -- v is dependend, so doesn't appear in other equations
@@ -924,7 +949,8 @@ reArrange v2 (LinExpr c vars) v =
       LinExpr (c/negate c2) r
       `addLin` LinExpr 0 [(v2, 1/c2)])
 
-reArrangeTrig :: (Show v, Ord t1, Ord v, Floating t1) => v -> Expr v t1 -> v -> Expr v t1
+reArrangeTrig :: (Show v, Ord t1, Ord v, Floating t1)
+              => v -> Expr v t1 -> v -> Expr v t1
 reArrangeTrig v2 (Expr lt trig _) v =
   let (c2, lt2) = reArrange v2 lt v
   in LinearE lt2 - trigExpr trig / ConstE c2
@@ -1024,7 +1050,8 @@ nonlinearEqs  (Dependencies _ _ trig trig2 nl) =
   nl
   
 -- | Show all variables and equations.  Useful in combination with `execSolver`.
-showVars :: (Show n, Show v, Ord n, Ord v, Floating n) => Either (DepError v n) (Dependencies v n) -> IO ()
+showVars :: (Show n, Show v, Ord n, Ord v, Floating n)
+         => Either (DepError v n) (Dependencies v n) -> IO ()
 showVars (Left e) = print e
 showVars (Right dep) = print dep
 
