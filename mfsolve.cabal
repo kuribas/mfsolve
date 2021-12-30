@@ -10,7 +10,7 @@ Author:		Kristof Bastiaensen
 Maintainer:	Kristof Bastiaensen
 Bug-Reports: 	https://github.com/kuribas/mfsolve/issues
 Build-type:	Simple
-Cabal-version:	>=1.8
+Cabal-version:	>=1.10
 Description:  An equation solver and calculator in the spirit of Metafont.
   .
   Like metafont, it can solve linear equations, and evaluate nonlinear expressions.  In addition to metafont, it also solves for angles, and makes the solution independend of the order of the equations.
@@ -24,7 +24,8 @@ Library
   Build-depends: base >= 3 && < 5, unordered-containers > 0.2, hashable >= 0.1.2, mtl >= 2.1.3, mtl-compat >= 0.2.1
   Exposed-Modules:
     Math.MFSolve
-  extensions: DeriveGeneric, PatternGuards, PatternSynonyms
+  default-extensions: DeriveGeneric, PatternGuards, PatternSynonyms
+  default-language: Haskell2010
 
 test-suite test
   type: exitcode-stdio-1.0
@@ -37,4 +38,4 @@ test-suite test
     tasty >= 0.8,
     tasty-hunit >= 0.9,
     mfsolve
-
+  default-language: Haskell2010
