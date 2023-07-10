@@ -21,7 +21,7 @@ source-repository head
 
 Library
   Ghc-options: -Wall
-  Build-depends: base >= 3 && < 5, unordered-containers > 0.2, hashable >= 0.1.2, mtl >= 2.1.3, mtl-compat >= 0.2.1
+  Build-depends: base >= 3 && < 5, unordered-containers > 0.2, hashable >= 0.1.2, mtl >= 2.1.3 && < 2.4, mtl-compat >= 0.2.1
   Exposed-Modules:
     Math.MFSolve
   default-extensions: DeriveGeneric, PatternGuards, PatternSynonyms
