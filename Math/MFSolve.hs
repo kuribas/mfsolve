@@ -102,6 +102,7 @@ where
 import qualified Data.HashMap.Strict as M
 import qualified Data.HashSet as H
 import GHC.Generics
+import Control.Monad
 import Control.Monad.Except
 import Control.Monad.State
 import Control.Monad.Reader
