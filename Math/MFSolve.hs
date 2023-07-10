@@ -111,7 +111,6 @@ import Control.Monad.Identity
 import Control.Monad.Cont
 import Control.Exception
 import Data.Typeable
-import Control.Applicative hiding (Const)
 import Data.Hashable
 import Data.Maybe
 import Data.List
@@ -208,8 +207,13 @@ type TrigEq v n = (Period v n, Amplitude v n, Phase n, n)
 type TrigEq2 v n = M.HashMap (Period v n)
                    (M.HashMap v (Expr v n))
 
+pattern LinearE :: LinExpr v n -> Expr v n
 pattern LinearE l = Expr l [] []
+
+pattern ConstE :: n -> Expr v n
 pattern ConstE c = Expr (LinExpr c []) [] []
+
+pattern LConst :: n -> LinExpr v n
 pattern LConst c = LinExpr c []
 
 instance (Hashable v, Hashable n) => Hashable (LinExpr v n)
