@@ -49,9 +49,6 @@ zero :: (Num n, Eq n) => Expr v n -> Bool
 zero (toSimple -> Const 0) = True
 zero _ = False
 
-instance (Floating n, Eq n, Ord n, Ord v) => Eq (Expr v n) where
-  a == b = zero $ a-b
-
 TestExpr a b ?= TestExpr c d =
   (\s -> testEq (a s) (c s) (show b) (show d),
    (b,d))
